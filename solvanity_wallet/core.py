@@ -116,9 +116,11 @@ def grind(*, prefix="", suffix="", ignore_case=False, backend="cuda",
             seeds = os.urandom(32*n)
             candidates = engine.scan(seeds, prefix, suffix, ignore_case)
             attempts += n
-            for index, pub in candidates:
-                hit = verify_hit(seeds[index*32:(index+1)*32], pub,
-                                 prefix, suffix, ignore_case)
+            verified = [verify_hit(seeds[index*32:(index+1)*32], pub,
+                                   prefix, suffix, ignore_case)
+                        for index, pub in candidates]
+            # Verify the entire device result batch before exporting any hit.
+            for hit in verified:
                 if len(results) < count:
                     if output_dir is not None:
                         hit["path"] = save_hit(hit, output_dir)
