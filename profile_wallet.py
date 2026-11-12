@@ -18,7 +18,7 @@ def save():
 def util_run(name, fn):
     raw=OUT/(name+"-smi.csv")
     with raw.open("w") as f:
-        proc=subprocess.Popen(["nvidia-smi","--query-gpu=timestamp,utilization.gpu,utilization.memory,memory.used,power.draw","--format=csv,noheader,nounits","--loop-ms=200"],stdout=f,stderr=subprocess.PIPE)
+        proc=subprocess.Popen(["nvidia-smi","--query-gpu=timestamp,utilization.gpu,utilization.memory,memory.used,power.draw,temperature.gpu,name,memory.total","--format=csv,noheader,nounits","--loop-ms=200"],stdout=f,stderr=subprocess.PIPE)
         try:
             t=time.perf_counter(); result=fn(); wall=time.perf_counter()-t
         finally:
