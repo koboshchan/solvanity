@@ -19,7 +19,7 @@ def main(argv=None):
     search.add_argument("--suffix", default="")
     search.add_argument("--ignore-case", "--ignorecase", action="store_true")
     search.add_argument("--backend", choices=["cpu", "cuda"], default="cpu")
-    search.add_argument("--batch-size", type=int, default=65536)
+    search.add_argument("--batch-size", type=int, default=None, help="omit for SM-aware CUDA calibration; integer fixes batch size")
     search.add_argument("--max-attempts", type=int)
     search.add_argument("--count", type=int, default=1)
     search.add_argument("--namespace", help="UTF-8 prefix, max 16 bytes; random by default")

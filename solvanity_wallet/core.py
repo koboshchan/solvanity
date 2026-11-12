@@ -85,7 +85,7 @@ class CPUBackend:
         pass
 
 def grind(*, prefix="", suffix="", ignore_case=False, backend="cuda",
-          batch_size=65536, count=1, max_attempts=None, on_event=None,
+          batch_size=None, count=1, max_attempts=None, on_event=None,
           output_dir=None):
     """Return verified hits. Callback receives progress/hit/done dictionaries.
 
@@ -93,7 +93,7 @@ def grind(*, prefix="", suffix="", ignore_case=False, backend="cuda",
     public/shared output. Progress events never include candidate seeds.
     """
     validate_pattern(prefix, suffix, ignore_case)
-    if not isinstance(batch_size, int) or not 1 <= batch_size <= 1048576:
+    if batch_size is not None and (not isinstance(batch_size, int) or isinstance(batch_size, bool) or not 1 <= batch_size <= 1048576):
         raise ValueError("batch_size must be between 1 and 1048576")
     if count < 1 or (max_attempts is not None and max_attempts < 1):
         raise ValueError("count and max_attempts must be positive")
@@ -109,7 +109,19 @@ def grind(*, prefix="", suffix="", ignore_case=False, backend="cuda",
     attempts = 0
     start = time.monotonic()
     try:
+        tuner = None
+        if batch_size is None and backend == "cuda":
+            from .tuning import LaunchTuner
+            device = engine.cp.cuda.Device()
+            tuner = LaunchTuner(device.attributes, device.mem_info[0], 1048576, 128,
+                                engine.kernel.attributes["max_threads_per_block"])
+        batch_size = batch_size or 65536
+        emit(dict(type="start", backend=backend, batch_size=tuner.config[0] if tuner else batch_size,
+                  automatic=tuner is not None, tuning=tuner.report() if tuner else None))
         while len(results) < count and (max_attempts is None or attempts < max_attempts):
+            if tuner:
+                batch_size, engine.block_size = tuner.config
+            batch_started = time.perf_counter()
             n = batch_size if max_attempts is None else min(batch_size, max_attempts-attempts)
             # A full independent OS CSPRNG seed for EVERY candidate. Never use
             # cuRAND, timestamps, counters, repeated seeds or seed expansion.
@@ -126,6 +138,8 @@ def grind(*, prefix="", suffix="", ignore_case=False, backend="cuda",
                         hit["path"] = save_hit(hit, output_dir)
                     results.append(hit)
                     emit(dict(type="hit", **hit))
+            if tuner and tuner.observe(n, time.perf_counter() - batch_started):
+                emit(dict(type="tuning", **tuner.report()))
             elapsed = time.monotonic()-start
             emit(dict(type="progress", backend=backend, attempts=attempts,
                       elapsed_seconds=elapsed, keys_per_second=attempts/max(elapsed,1e-9),

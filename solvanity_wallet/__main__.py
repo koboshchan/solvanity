@@ -11,7 +11,7 @@ def main(argv=None):
     p.add_argument("--suffix", default="")
     p.add_argument("--ignore-case", action="store_true")
     p.add_argument("--backend", choices=["cpu","cuda"], default="cuda")
-    p.add_argument("--batch-size", type=int, default=65536)
+    p.add_argument("--batch-size", type=int, default=None, help="omit for SM-aware CUDA calibration; integer fixes batch size")
     p.add_argument("--count", type=int, default=1)
     p.add_argument("--max-attempts", type=int)
     p.add_argument("--output-dir")

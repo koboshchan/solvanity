@@ -19,6 +19,7 @@ class CUDABackend:
         self.kernel = self.module.get_function("wallet_grind")
         self.derive_kernel = self.module.get_function("wallet_derive")
         self.last_seconds = None
+        self.block_size = 128
 
     def derive(self, seeds):
         cp = self.cp
@@ -48,7 +49,7 @@ class CUDABackend:
         start, end = cp.cuda.Event(), cp.cuda.Event()
         try:
             start.record()
-            self.kernel(((n+127)//128,), (128,),
+            self.kernel(((n+self.block_size-1)//self.block_size,), (self.block_size,),
                 (src,np.uint64(n),pre,np.int32(len(prefix)),suf,np.int32(len(suffix)),
                  np.int32(ignore_case),found,np.uint32(n),indices,pubs))
             end.record(); end.synchronize()
