@@ -16,20 +16,25 @@ from IPython.display import display, Javascript
 ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 CSS = """<style>
-.sv {background:#111511;color:#e9eddf;padding:28px;border:1px solid #394334;border-radius:16px;max-width:1040px}
-.sv .widget-label,.sv label {color:#ccd4c2!important}
-.sv input,.sv select,.sv textarea {background:#1b2219!important;color:#f2f5ea!important;border:1px solid #506046!important;border-radius:6px!important}
-.sv button {border-radius:6px!important;font-family:monospace!important}
-.sv-title {font:600 42px Georgia,serif;letter-spacing:-2px;margin:0}
-.sv-kicker {font:11px monospace;letter-spacing:3px;color:#c1ed81}
-.sv-note {color:#a9b5a0;font:13px/1.6 monospace}
-.sv-warning {border-left:3px solid #e7b56b;padding:12px 16px;background:#292519;color:#f4dab1;font:13px/1.6 monospace}
-.sv-metrics {display:flex;gap:28px;flex-wrap:wrap;padding:20px 0}
-.sv-number {font:26px monospace;color:#d5f6a8}.sv-caption {font:11px monospace;color:#a9b5a0;text-transform:uppercase}
-.sv-result {border-top:1px solid #394334;padding:16px 0;overflow-wrap:anywhere}
-.sv-address {font:16px monospace;color:#d5f6a8}
-.sv-status {font:13px monospace;padding:12px 0;color:#d5f6a8}
-@media(max-width:600px){.sv{padding:16px}.sv-title{font-size:34px}}
+.sv{--bg:#fff;--fg:#1d1d1f;--mut:#6e6e73;--card:#f5f5f7;--line:#d2d2d7;--acc:#0071e3;
+ font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+ background:var(--bg);color:var(--fg);padding:28px;border:1px solid var(--line);border-radius:20px;max-width:760px;box-sizing:border-box}
+@media(prefers-color-scheme:dark){.sv{--bg:#1c1c1e;--fg:#f5f5f7;--mut:#98989d;--card:#2c2c2e;--line:#3a3a3c;--acc:#0a84ff}}
+.sv .widget-label,.sv label{color:var(--mut)!important;font-family:inherit!important}
+.sv input[type=text],.sv input[type=number],.sv select,.sv textarea{background:var(--card)!important;color:var(--fg)!important;
+ border:1px solid var(--line)!important;border-radius:10px!important;min-height:36px!important;padding:0 12px!important;font-family:inherit!important;box-sizing:border-box!important;opacity:1!important}
+.sv input:focus,.sv select:focus{outline:2px solid var(--acc)!important;border-color:var(--acc)!important}
+.sv .widget-text,.sv .widget-dropdown,.sv .widget-bounded-int-text{min-height:40px;margin:4px 0}
+.sv .widget-toggle-buttons button{background:var(--card)!important;color:var(--fg)!important;border:0!important;font-family:inherit!important}
+.sv .widget-toggle-buttons button.mod-active{background:var(--acc)!important;color:#fff!important}
+.sv button{border-radius:10px!important;font-family:inherit!important;font-weight:600}
+.sv-title{font:700 32px/1.1 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.5px;margin:0 0 4px}
+.sv-note{color:var(--mut);font:13px/1.5 inherit;margin:6px 0}
+.sv-metrics{display:flex;gap:24px;flex-wrap:wrap;padding:16px 0}
+.sv-number{font:600 24px inherit;color:var(--fg)}.sv-caption{font:12px inherit;color:var(--mut)}
+.sv-result{background:var(--card);border-radius:14px;padding:14px 16px;overflow-wrap:anywhere;margin-top:12px}
+.sv-address{font:15px ui-monospace,SFMono-Regular,Menlo,monospace}
+.sv-status{font-size:14px;padding:10px 0;color:var(--mut)}
 </style>"""
 
 def coarse_probability(prefix, suffix, ignore_case):
@@ -107,24 +112,22 @@ class SolvanityUI:
         self.count = W.BoundedIntText(description="Results", min=1, max=100, value=1, style=style, layout=wide)
         self.budget = W.BoundedIntText(description="Attempt limit", min=0, max=2**53-1, value=0, style=style, layout=wide)
         self.consent = W.Checkbox(description="I understand cloud-generated keys are for testing, not real funds.", indent=False, layout=wide)
-        self.start = W.Button(description="Start search", icon="play", style={"button_color":"#c1ed81","text_color":"#111511"}, layout=W.Layout(width="180px",height="42px"))
+        self.start = W.Button(description="Start search", icon="play", style={"button_color":"#0071e3","text_color":"#ffffff"}, layout=W.Layout(width="180px",height="42px"))
         self.stop = W.Button(description="Stop", icon="stop", disabled=True, layout=W.Layout(width="100px",height="42px"))
         self.clear = W.Button(description="Forget results", icon="trash", layout=W.Layout(width="160px",height="42px"))
         self.status = W.HTML('<div class="sv-status" role="status">Ready. Choose a pattern, then start.</div>')
         self.metrics = W.HTML()
-        self.chance = W.FloatProgress(min=0,max=1,value=0,description="P(≥1 hit)", style={"description_width":"100px","bar_color":"#c1ed81"}, layout=wide)
+        self.chance = W.FloatProgress(min=0,max=1,value=0,description="P(≥1 hit)", style={"description_width":"100px","bar_color":"#0071e3"}, layout=wide)
         self.chance_note = W.HTML('<p class="sv-note">Probability is not completion. Independent trials have no deadline or guaranteed finish. Estimates below assume uniform base58 digits; prefix bias and overlapping patterns can change them significantly.</p>')
         self.results = W.VBox()
         self.transfer_output = W.Output()
-        controls = W.Box([W.VBox([self.prefix,self.suffix,self.case],layout=W.Layout(flex="1 1 320px")),
-                          W.VBox([self.backend,self.batch,self.count,self.budget],layout=W.Layout(flex="1 1 320px"))],
+        controls = W.Box([W.VBox([self.prefix,self.suffix,self.case],layout=W.Layout(flex="1 1 300px",min_width="260px")),
+                          W.VBox([self.backend,self.batch,self.count,self.budget],layout=W.Layout(flex="1 1 300px",min_width="260px"))],
                          layout=W.Layout(display="flex",flex_flow="row wrap",grid_gap="24px"))
         self.root = W.VBox([
-            W.HTML(CSS+'<div class="sv-kicker">SOLANA / GPU ADDRESS LAB</div><p class="sv-title">Make it yours.</p><p class="sv-note">Two search engines. One place to find your address.</p>'),
-            W.HTML('<div class="sv-warning">Google VMs and notebook outputs are not private key vaults. Use Colab for experiments only. Generate locally on a trusted offline machine for real funds. Never paste an existing private key here. Do not save or share this notebook with result widget state.</div>'),
+            W.HTML(CSS+'<p class="sv-title">Solvanity</p><p class="sv-note">Find a custom Solana address.</p>'),
             W.HTML('<p class="sv-note">'+html.escape(gpu_info())+'</p>'),
             self.mode, controls, self.contract_box,
-            W.HTML('<p class="sv-note">Attempt limit 0 means keep searching until enough results are found or you stop. GPU startup includes compilation and verification.</p>'),
             self.consent,W.HBox([self.start,self.stop,self.clear]),self.status,self.metrics,
             self.chance,self.chance_note,self.results,self.transfer_output
         ],layout=W.Layout(width="100%"))
@@ -245,7 +248,7 @@ class SolvanityUI:
         if not (self.task and not self.task.done()):
             self.chance.value = 0
             self.metrics.value = ""
-            self._status("Results forgotten by this interface. Python/cloud/browser copies may remain; disconnect and delete the runtime when finished.")
+            self._status("Cleared.")
 
     def _add_card(self, hit):
         wallet = "keypair_json" in hit
