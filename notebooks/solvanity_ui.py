@@ -1,0 +1,313 @@
+"""Shared Solvanity notebook interface. Never prints worker output or secret events."""
+from __future__ import annotations
+import asyncio
+import html
+import json
+import math
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+import ipywidgets as W
+from IPython.display import display, Javascript
+
+ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+CSS = """<style>
+.sv {background:#111511;color:#e9eddf;padding:28px;border:1px solid #394334;border-radius:16px;max-width:1040px}
+.sv .widget-label,.sv label {color:#ccd4c2!important}
+.sv input,.sv select,.sv textarea {background:#1b2219!important;color:#f2f5ea!important;border:1px solid #506046!important;border-radius:6px!important}
+.sv button {border-radius:6px!important;font-family:monospace!important}
+.sv-title {font:600 42px Georgia,serif;letter-spacing:-2px;margin:0}
+.sv-kicker {font:11px monospace;letter-spacing:3px;color:#c1ed81}
+.sv-note {color:#a9b5a0;font:13px/1.6 monospace}
+.sv-warning {border-left:3px solid #e7b56b;padding:12px 16px;background:#292519;color:#f4dab1;font:13px/1.6 monospace}
+.sv-metrics {display:flex;gap:28px;flex-wrap:wrap;padding:20px 0}
+.sv-number {font:26px monospace;color:#d5f6a8}.sv-caption {font:11px monospace;color:#a9b5a0;text-transform:uppercase}
+.sv-result {border-top:1px solid #394334;padding:16px 0;overflow-wrap:anywhere}
+.sv-address {font:16px monospace;color:#d5f6a8}
+.sv-status {font:13px monospace;padding:12px 0;color:#d5f6a8}
+@media(max-width:600px){.sv{padding:16px}.sv-title{font-size:34px}}
+</style>"""
+
+def coarse_probability(prefix, suffix, ignore_case):
+    """Uniform-digit heuristic only. Prefix digit bias/overlap are not modeled."""
+    probability = 1.0
+    for char in prefix + suffix:
+        variants = sum((c.lower() == char.lower()) if ignore_case else (c == char)
+                       for c in ALPHABET)
+        if not variants:
+            return 0.0
+        probability *= variants / 58
+    return probability
+
+def human_time(seconds):
+    if not math.isfinite(seconds):
+        return "unknown"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    if seconds < 3600:
+        return f"{seconds/60:.1f} min"
+    if seconds < 86400:
+        return f"{seconds/3600:.1f} hours"
+    return f"{seconds/86400:.1f} days"
+
+def command_for(config, python=sys.executable):
+    """CLI flags verified against the actual wallet and contract source."""
+    mode = config["mode"]
+    if mode not in ("wallet", "contract"):
+        raise ValueError("Select wallet or contract")
+    from solvanity_contract.core import Pattern, pubkey, validate_owner
+    Pattern(config["prefix"], config["suffix"], config["ignore_case"])
+    cmd = [python, "-u", "-m", f"solvanity_{mode}", "grind", "--json",
+           "--prefix", config["prefix"], "--suffix", config["suffix"],
+           "--backend", config["backend"], "--batch-size", str(config["batch_size"]),
+           "--count", str(config["count"])]
+    if config["ignore_case"]:
+        cmd.append("--ignore-case")
+    if config.get("max_attempts"):
+        cmd += ["--max-attempts", str(config["max_attempts"])]
+    if mode == "contract":
+        base = str(pubkey(config["base"]))
+        validate_owner(pubkey(config["owner"]))
+        cmd += ["--base", base, "--owner", config["owner"]]
+    return cmd
+
+def gpu_info():
+    try:
+        proc = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,driver_version",
+                               "--format=csv,noheader"], capture_output=True, text=True, timeout=5)
+        return proc.stdout.strip() if proc.returncode == 0 else "No NVIDIA GPU detected. CPU remains available."
+    except (OSError, subprocess.TimeoutExpired):
+        return "No NVIDIA GPU detected. CPU remains available."
+
+class SolvanityUI:
+    def __init__(self):
+        self.proc = None
+        self.task = None
+        self.hits = []
+        self.cards = []
+        self.stopping = False
+        self.config = None
+        wide = W.Layout(width="100%")
+        style = {"description_width": "100px"}
+        self.mode = W.ToggleButtons(options=[("Wallet keypair", "wallet"), ("Seeded account", "contract")])
+        self.prefix = W.Text(description="Prefix", placeholder="kobosh", style=style, layout=wide)
+        self.suffix = W.Text(description="Suffix", placeholder="Optional", style=style, layout=wide)
+        self.case = W.ToggleButtons(options=[("Exact caps", False), ("Any caps", True)], value=True)
+        self.base = W.Text(description="Base public key", placeholder="Public signer address only, never a private key", style=style, layout=wide)
+        self.owner = W.Dropdown(description="Owner program", options=[("SPL Token", "token"), ("Token 2022", "token2022"), ("Custom program", "custom")], style=style, layout=wide)
+        self.custom_owner = W.Text(description="Program key", style=style, layout=wide)
+        self.contract_box = W.VBox([self.base, self.owner, self.custom_owner,
+            W.HTML('<p class="sv-note">A create_with_seed account is not an importable wallet or a PDA. The base signer is still needed to create it. No transaction is sent.</p>')])
+        self.backend = W.Dropdown(description="Compute", options=[("NVIDIA CUDA", "cuda"), ("CPU reference", "cpu")], style=style, layout=wide)
+        self.batch = W.Dropdown(description="Batch size", options=[4096,16384,65536,262144], value=65536, style=style, layout=wide)
+        self.count = W.BoundedIntText(description="Results", min=1, max=100, value=1, style=style, layout=wide)
+        self.budget = W.BoundedIntText(description="Attempt limit", min=0, max=2**53-1, value=0, style=style, layout=wide)
+        self.consent = W.Checkbox(description="I understand cloud-generated keys are for testing, not real funds.", indent=False, layout=wide)
+        self.start = W.Button(description="Start search", icon="play", style={"button_color":"#c1ed81","text_color":"#111511"}, layout=W.Layout(width="180px",height="42px"))
+        self.stop = W.Button(description="Stop", icon="stop", disabled=True, layout=W.Layout(width="100px",height="42px"))
+        self.clear = W.Button(description="Forget results", icon="trash", layout=W.Layout(width="160px",height="42px"))
+        self.status = W.HTML('<div class="sv-status" role="status">Ready. Choose a pattern, then start.</div>')
+        self.metrics = W.HTML()
+        self.chance = W.FloatProgress(min=0,max=1,value=0,description="P(≥1 hit)", style={"description_width":"100px","bar_color":"#c1ed81"}, layout=wide)
+        self.chance_note = W.HTML('<p class="sv-note">Probability is not completion. Independent trials have no deadline or guaranteed finish. Estimates below assume uniform base58 digits; prefix bias and overlapping patterns can change them significantly.</p>')
+        self.results = W.VBox()
+        self.transfer_output = W.Output()
+        controls = W.Box([W.VBox([self.prefix,self.suffix,self.case],layout=W.Layout(flex="1 1 320px")),
+                          W.VBox([self.backend,self.batch,self.count,self.budget],layout=W.Layout(flex="1 1 320px"))],
+                         layout=W.Layout(display="flex",flex_flow="row wrap",grid_gap="24px"))
+        self.root = W.VBox([
+            W.HTML(CSS+'<div class="sv-kicker">SOLANA / GPU ADDRESS LAB</div><p class="sv-title">Make it yours.</p><p class="sv-note">Two search engines. One place to find your address.</p>'),
+            W.HTML('<div class="sv-warning">Google VMs and notebook outputs are not private key vaults. Use Colab for experiments only. Generate locally on a trusted offline machine for real funds. Never paste an existing private key here. Do not save or share this notebook with result widget state.</div>'),
+            W.HTML('<p class="sv-note">'+html.escape(gpu_info())+'</p>'),
+            self.mode, controls, self.contract_box,
+            W.HTML('<p class="sv-note">Attempt limit 0 means keep searching until enough results are found or you stop. GPU startup includes compilation and verification.</p>'),
+            self.consent,W.HBox([self.start,self.stop,self.clear]),self.status,self.metrics,
+            self.chance,self.chance_note,self.results,self.transfer_output
+        ],layout=W.Layout(width="100%"))
+        self.root.add_class("sv")
+        self.mode.observe(self._visibility,names="value")
+        self.owner.observe(self._visibility,names="value")
+        self.start.on_click(self._start)
+        self.stop.on_click(self._stop)
+        self.clear.on_click(self._clear)
+        self._visibility()
+
+    def display(self):
+        display(self.root)
+        return self
+
+    def _visibility(self, *_):
+        self.contract_box.layout.display = "" if self.mode.value == "contract" else "none"
+        self.custom_owner.layout.display = "" if self.owner.value == "custom" else "none"
+
+    def _status(self, text):
+        self.status.value = '<div class="sv-status" role="status">'+html.escape(text)+'</div>'
+
+    def _configuration(self):
+        return dict(mode=self.mode.value,prefix=self.prefix.value,suffix=self.suffix.value,
+                    ignore_case=self.case.value,backend=self.backend.value,batch_size=self.batch.value,
+                    count=self.count.value,max_attempts=self.budget.value,
+                    base=self.base.value.strip(),owner=self.custom_owner.value.strip() if self.owner.value=="custom" else self.owner.value)
+
+    def _start(self, *_):
+        if self.task and not self.task.done():
+            return
+        if self.mode.value == "wallet" and not self.consent.value:
+            self._status("Acknowledge the cloud key warning first.")
+            return
+        try:
+            config = self._configuration()
+            command = command_for(config)
+        except (ValueError, ImportError) as exc:
+            self._status(str(exc))
+            return
+        self._clear()
+        self.config = config
+        self.stopping = False
+        self.start.disabled = True
+        self.stop.disabled = False
+        self._status("Starting verified engine. CUDA compilation can take a moment.")
+        self.task = asyncio.create_task(self._run(command))
+
+    async def _run(self, command):
+        stderr = None
+        try:
+            # Never inherit stdout: wallet JSON events contain secret key material.
+            # stderr goes to a private temporary file, never to notebook output.
+            with tempfile.TemporaryFile(mode="w+b") as stderr:
+                self.proc = await asyncio.create_subprocess_exec(*command,stdout=asyncio.subprocess.PIPE,stderr=stderr)
+                if self.stopping:
+                    self.proc.terminate()
+                async for raw in self.proc.stdout:
+                    try:
+                        event = json.loads(raw)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue  # never echo unparsed output
+                    self._event(event)
+                code = await self.proc.wait()
+                if self.stopping:
+                    self._status(f"Stopped. Kept {len(self.hits)} verified result(s).")
+                elif code == 0:
+                    self._status(f"Finished. {len(self.hits)} verified result(s). Download before disconnecting.")
+                elif code == 1:
+                    self._status(f"Attempt limit reached. Kept {len(self.hits)} result(s).")
+                else:
+                    self._status("Engine failed. Check installation, pattern and GPU support. Private worker output was not displayed.")
+        except Exception:
+            self._status("Could not run engine. Check installed packages and runtime. No private worker output was displayed.")
+        finally:
+            if self.proc and self.proc.returncode is None:
+                self.proc.terminate()
+                await self.proc.wait()
+            self.proc = None
+            self.start.disabled = False
+            self.stop.disabled = True
+
+    def _event(self, event):
+        kind = event.get("type")
+        if kind == "hit":
+            self.hits.append(event)
+            self._add_card(event)
+        elif kind in ("progress","done","summary"):
+            attempts = event.get("attempts",0)
+            elapsed = event.get("elapsed_seconds",0)
+            rate = event.get("keys_per_second", attempts/max(elapsed,1e-9))
+            probability = coarse_probability(self.config["prefix"],self.config["suffix"],self.config["ignore_case"])
+            chance = -math.expm1(-attempts*probability) if probability else 0
+            median = math.log(2)/(rate*probability) if rate*probability else math.inf
+            self.chance.value = min(chance,1)
+            values = [(f"{rate:,.0f}","keys / second"),(f"{attempts:,}","attempts"),(human_time(elapsed),"elapsed"),(human_time(median),"rough median / next hit")]
+            self.metrics.value = '<div class="sv-metrics">'+"".join('<div><div class="sv-number">'+html.escape(a)+'</div><div class="sv-caption">'+b+'</div></div>' for a,b in values)+'</div>'
+            self._status(f"Searching. {len(self.hits)} verified result(s). Approximate chance so far {chance:.1%}.")
+        elif kind == "error":
+            self._status("Engine rejected the request. Check pattern, public key and selected backend.")
+
+    def _stop(self, *_):
+        self.stopping = True
+        if self.proc and self.proc.returncode is None:
+            self.proc.terminate()
+        self._status("Stopping worker. Existing results stay available.")
+
+    def _clear(self, *_):
+        # Clear sync'd secret widgets before dropping them; no zeroization guarantee.
+        for card in self.cards:
+            for secret_widget in card.get("secret_widgets",[]):
+                secret_widget.value = ""
+            card["box"].close()
+        self.cards.clear()
+        self.hits.clear()
+        self.results.children = ()
+        self.transfer_output.clear_output()
+        if not (self.task and not self.task.done()):
+            self.chance.value = 0
+            self.metrics.value = ""
+            self._status("Results forgotten by this interface. Python/cloud/browser copies may remain; disconnect and delete the runtime when finished.")
+
+    def _add_card(self, hit):
+        wallet = "keypair_json" in hit
+        address = hit["address"]
+        header = W.HTML('<div class="sv-result"><div class="sv-caption">CPU-verified '+("wallet keypair" if wallet else "seeded account")+'</div><div class="sv-address">'+html.escape(address)+'</div></div>')
+        copy_address = W.Button(description="Copy address",icon="copy")
+        copy_address.on_click(lambda _: self._copy(address))
+        download = W.Button(description="Download JSON64" if wallet else "Download derivation JSON",icon="download",layout=W.Layout(width="240px"))
+        download.on_click(lambda _: self._download(hit,wallet))
+        controls = [copy_address,download]
+        children = [header]
+        secret_widgets = []
+        if wallet:
+            reveal = W.ToggleButton(description="Reveal secret",value=False,icon="eye",layout=W.Layout(width="160px"))
+            secret = W.Textarea(value="",disabled=True,layout=W.Layout(width="100%",height="85px",display="none"))
+            secret_widgets.append(secret)
+            def toggle(change):
+                secret.value = hit["phantom_secret"] if change["new"] else ""
+                secret.layout.display = "" if change["new"] else "none"
+                reveal.description = "Hide secret" if change["new"] else "Reveal secret"
+            reveal.observe(toggle,names="value")
+            copy_secret = W.Button(description="Copy secret",icon="copy")
+            copy_secret.on_click(lambda _: self._copy(hit["phantom_secret"]))
+            controls += [reveal,copy_secret]
+            children += [secret,W.HTML('<p class="sv-note">Secret hidden by default. Reveal/copy/download is an explicit disclosure to this browser. JSON64 is a 64-byte array, not base64.</p>')]
+        else:
+            children += [W.HTML('<p class="sv-note">Seed '+html.escape(hit["seed"])+'<br>Base '+html.escape(hit["base"])+'<br>Owner '+html.escape(hit["owner"])+'</p>')]
+            copy_seed = W.Button(description="Copy seed",icon="copy")
+            copy_seed.on_click(lambda _: self._copy(hit["seed"]))
+            controls.append(copy_seed)
+        children += [W.Box(controls,layout=W.Layout(display="flex",flex_flow="row wrap",grid_gap="8px"))]
+        box = W.VBox(children)
+        self.cards.append(dict(box=box,secret_widgets=secret_widgets))
+        self.results.children = (*self.results.children,box)
+
+    def _copy(self, value):
+        script = "navigator.clipboard.writeText("+json.dumps(value)+").then(()=>true)"
+        try:
+            from google.colab import output
+            output.eval_js(script)
+            self._status("Copied. Clipboard contents may be visible to other apps.")
+        except ImportError:
+            # Output is transient and cleared immediately after browser execution.
+            with self.transfer_output:
+                display(Javascript(script))
+            self._status("Copy requested. Browser clipboard permission is required; download if unavailable. Clear all outputs before saving.")
+        except Exception:
+            self._status("Clipboard access was blocked. Use download instead.")
+
+    def _download(self, hit, wallet):
+        directory = Path(tempfile.mkdtemp(prefix="solvanity-export-"))
+        directory.chmod(0o700)
+        path = directory/(hit["address"]+".json")
+        fd = os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,"w") as stream:
+            json.dump(hit["keypair_json"] if wallet else hit,stream)
+            stream.write("\n")
+        try:
+            from google.colab import files
+            files.download(str(path))
+            self._status("Download requested. Delete the runtime afterward; exported files exist on this VM until removed.")
+        except ImportError:
+            self._status("Export saved locally to "+str(path)+". Keep it private.")
+        except Exception:
+            self._status("Browser download failed. The private export remains on this VM. Delete runtime when finished.")
