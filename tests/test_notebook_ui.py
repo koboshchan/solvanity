@@ -179,3 +179,14 @@ def test_gpu_poll_drops_stale_query_after_stop(monkeypatch):
     monkeypatch.setattr(m,"read_gpu",query)
     app._poll_gpu(stop)
     assert app.gpu is None
+
+def test_koboshchan_warns_over_a_day():
+    m=load()
+    out=m.eta_html("koboshchan","",False,1e7,True)
+    assert "warn" in out and "Over a day" in out and "Expected" in out
+    assert m.coarse_probability("koboshchan","",False)==pytest.approx(58**-10)
+    app=m.SolvanityUI()
+    app.config=dict(backend="cpu",batch_size=None,prefix="ab",suffix="",ignore_case=False)
+    app._event(dict(type="progress",attempts=1000,elapsed_seconds=10,keys_per_second=100))
+    assert app.snap["expected"]==pytest.approx(33.64)
+    assert "expected time (est.)" in app.metrics.value

@@ -81,7 +81,7 @@ def eta_html(prefix, suffix, ignore_case, rate=None, running=False):
     sub = f"Estimated average at {rate:,.0f} keys/s, approx. odds {odds}. Not a guarantee."
     if seconds > 86400:
         sub = "Over a day on average. Try a shorter pattern or Any caps. "+sub
-    return '<div class="sv-eta'+cls+'"><div class="sv-eta-big">Expected ~'+human_time(seconds)+'</div><div class="sv-eta-sub">'+html.escape(sub)+'</div></div>'
+    return '<div class="sv-eta'+cls+'"><div class="sv-eta-big">Expected ~'+human_time(seconds)+' (est.)</div><div class="sv-eta-sub">'+html.escape(sub)+'</div></div>'
 
 def percentile_seconds(rate, probability, q):
     """Time by which a hit has probability q: -log1p(-q)/(rate*p). Stable for tiny p."""
@@ -282,7 +282,7 @@ class SolvanityUI:
         batch = snap.get("batch_size") or (self.config or {}).get("batch_size")
         cells = [(f"{snap['current']:,.0f}", "keys / second now"), (f"{snap['rate']:,.0f}", "keys / second average"),
                  (f"{snap['attempts']:,}", "attempts"), (human_time(snap["elapsed"]), "elapsed"),
-                 (human_time(snap["p50"]), "50% chance by (est.)"), (human_time(snap["p90"]), "90% chance by (est.)"),
+                 (human_time(snap["expected"]), "expected time (est.)"), (human_time(snap["p50"]), "50% chance by (est.)"), (human_time(snap["p90"]), "90% chance by (est.)"),
                  (f"{batch:,}" if isinstance(batch, int) else "Automatic", "batch size"), (str(len(self.hits)), "results found")]
         if (self.config or {}).get("backend") == "cuda":
             cells += gpu_cells(self.gpu) if self.gpu else [("Not available", "GPU telemetry")]
@@ -407,7 +407,7 @@ class SolvanityUI:
             prev = self.snap
             current = ((attempts-prev["attempts"])/(now_t-prev["elapsed"])) if prev and now_t > prev["elapsed"] else rate
             self.snap = dict(attempts=attempts, elapsed=elapsed, rate=rate, current=current, batch_size=event.get("batch_size") or getattr(self, "batch_seen", None),
-                             p50=percentile_seconds(rate, probability, .5), p90=percentile_seconds(rate, probability, .9))
+                             expected=(1/(rate*probability) if rate*probability > 0 else math.inf), p50=percentile_seconds(rate, probability, .5), p90=percentile_seconds(rate, probability, .9))
             self.chance.value = min(chance,1)
             self.eta.value = eta_html(self.config["prefix"],self.config["suffix"],self.config["ignore_case"],rate,True)
             self._render()
