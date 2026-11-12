@@ -37,3 +37,21 @@ def test_cuda_matching_and_every_hit_verified(ignore_case):
                 verify_hit(seeds[i],pub,prefix,suffix,ignore_case)
     finally:
         engine.close()
+
+
+def test_cuda_reused_buffer_sizes_and_wipe():
+    from solvanity_wallet.cuda_backend import CUDABackend
+    from solvanity_wallet.entropy import source
+    engine=CUDABackend()
+    entropy=source()
+    try:
+        for n in (257,1024,1,999,2049,3):
+            batch=entropy.batch(n)
+            try:
+                hits=engine.scan(batch.data,"","",False)
+                assert len(hits)==n
+                for i,pub in hits: verify_hit(batch.seed(i),pub)
+                assert not engine._buffers[0].get().any()
+                assert not engine._buffers[2].get().any()
+            finally: batch.close()
+    finally: engine.close()
