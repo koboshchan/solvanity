@@ -1,4 +1,4 @@
-"""Genuine Ed25519 keypairs. No deterministic candidate expansion."""
+"""Genuine Ed25519 keypairs with CPU-verified CSPRNG candidate streams."""
 from __future__ import annotations
 import json
 import os
@@ -108,7 +108,15 @@ def grind(*, prefix="", suffix="", ignore_case=False, backend="cuda",
     results = []
     attempts = 0
     start = time.monotonic()
+    pool = None
+    pending = None
+    seed_source = None
     try:
+        if backend == "cuda":
+            from concurrent.futures import ThreadPoolExecutor
+            from .entropy import source
+            seed_source = source()
+            pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wallet-entropy")
         tuner = None
         if batch_size is None and backend == "cuda":
             from .tuning import LaunchTuner
@@ -123,14 +131,30 @@ def grind(*, prefix="", suffix="", ignore_case=False, backend="cuda",
                 batch_size, engine.block_size = tuner.config
             batch_started = time.perf_counter()
             n = batch_size if max_attempts is None else min(batch_size, max_attempts-attempts)
-            # A full independent OS CSPRNG seed for EVERY candidate. Never use
-            # cuRAND, timestamps, counters, repeated seeds or seed expansion.
-            seeds = os.urandom(32*n)
-            candidates = engine.scan(seeds, prefix, suffix, ignore_case)
+            if seed_source:
+                batch = pending.result() if pending is not None else seed_source.batch(n)
+                pending = None
+                try:
+                    # Once calibration is stable, overlap next native/OS batch
+                    # with current CUDA work. At most two seed batches exist.
+                    if tuner is None or tuner.done:
+                        remaining = None if max_attempts is None else max_attempts-attempts-n
+                        if remaining is None or remaining > 0:
+                            next_n = batch_size if remaining is None else min(batch_size,remaining)
+                            pending = pool.submit(seed_source.batch,next_n)
+                    candidates = engine.scan(batch.data,prefix,suffix,ignore_case)
+                    verified = [verify_hit(batch.seed(index),pub,prefix,suffix,ignore_case)
+                                for index,pub in candidates]
+                finally:
+                    batch.close()
+            else:
+                # CPU reference retains one independent OS seed per candidate.
+                seeds = os.urandom(32*n)
+                candidates = engine.scan(seeds,prefix,suffix,ignore_case)
+                verified = [verify_hit(seeds[index*32:(index+1)*32],pub,
+                                       prefix,suffix,ignore_case)
+                            for index,pub in candidates]
             attempts += n
-            verified = [verify_hit(seeds[index*32:(index+1)*32], pub,
-                                   prefix, suffix, ignore_case)
-                        for index, pub in candidates]
             # Verify the entire device result batch before exporting any hit.
             for hit in verified:
                 if len(results) < count:
@@ -148,5 +172,11 @@ def grind(*, prefix="", suffix="", ignore_case=False, backend="cuda",
                   elapsed_seconds=time.monotonic()-start, complete=len(results)>=count))
         return results
     finally:
-        engine.close()
-        # Python cannot guarantee zeroization of immutable copies. See SECURITY.md.
+        try:
+            if pool is not None:
+                pool.shutdown(wait=True)
+            if pending is not None:
+                pending.result().close()
+        finally:
+            engine.close()
+        # Best-effort wipe only; immutable copies can survive. See SECURITY.md.
