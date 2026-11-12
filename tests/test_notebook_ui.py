@@ -52,3 +52,32 @@ def test_notebook_uses_only_unified_repository():
 def test_batch_default_selected_and_no_consent():
     app=load().SolvanityUI()
     assert app.batch.index==0 and not hasattr(app,"consent")
+
+def test_background_thread_updates_without_event_loop():
+    import sys, time
+    m=load(); app=m.SolvanityUI()
+    app.config=dict(prefix="A",suffix="",ignore_case=False)
+    cmd=[sys.executable,"-c","import json;print(json.dumps({'type':'progress','attempts':10,'elapsed_seconds':1}),flush=True)"]
+    import threading
+    app.stopping=False
+    app.task=threading.Thread(target=app._run,args=(cmd,),daemon=True); app.task.start(); app.task.join(10)
+    assert not app.task.is_alive() and "Finished" in app.status.value
+    assert app.start.disabled is False and app.stop.disabled is True
+
+def test_stop_before_process_assignment(monkeypatch):
+    import sys
+    m=load(); app=m.SolvanityUI()
+    app.config=dict(prefix="A",suffix="",ignore_case=False)
+    app.start.disabled=True; app.stop.disabled=False
+    app._stop()
+    app._run([sys.executable,"-c","import time;time.sleep(30)"])
+    assert app.proc is None and app.start.disabled is False and app.stop.disabled is True
+    assert "Stopped" in app.status.value
+
+def test_spawn_failure_restores_controls_without_output(capsys):
+    m=load(); app=m.SolvanityUI()
+    app.start.disabled=True; app.stop.disabled=False
+    app._run(["/nonexistent/solvanity-private-worker"])
+    assert app.proc is None and app.start.disabled is False and app.stop.disabled is True
+    assert "Could not run" in app.status.value
+    assert "solvanity-private-worker" not in capsys.readouterr().out

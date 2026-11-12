@@ -1,6 +1,6 @@
 """Shared Solvanity notebook interface. Never prints worker output or secret events."""
 from __future__ import annotations
-import asyncio
+import threading
 import html
 import json
 import math
@@ -158,7 +158,7 @@ class SolvanityUI:
                     base=self.base.value.strip(),owner=self.custom_owner.value.strip() if self.owner.value=="custom" else self.owner.value)
 
     def _start(self, *_):
-        if self.task and not self.task.done():
+        if self.task and self.task.is_alive():
             return
         try:
             config = self._configuration()
@@ -172,41 +172,44 @@ class SolvanityUI:
         self.start.disabled = True
         self.stop.disabled = False
         self._status("Starting verified engine. CUDA compilation can take a moment.")
-        self.task = asyncio.create_task(self._run(command))
+        self.task = threading.Thread(target=self._run, args=(command,), daemon=True)
+        self.task.start()
 
-    async def _run(self, command):
-        stderr = None
+    def _run(self, command):
+        # Thread + Popen: asyncio tasks on an idle Colab kernel are not scheduled
+        # until another cell runs, so the UI never updated by itself.
         try:
-            # Never inherit stdout: wallet JSON events contain secret key material.
-            # stderr goes to a private temporary file, never to notebook output.
             with tempfile.TemporaryFile(mode="w+b") as stderr:
-                self.proc = await asyncio.create_subprocess_exec(*command,stdout=asyncio.subprocess.PIPE,stderr=stderr)
+                # Never inherit stdout: wallet JSON events contain secret key material.
+                self.proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=stderr)
                 if self.stopping:
                     self.proc.terminate()
-                async for raw in self.proc.stdout:
+                for raw in self.proc.stdout:
                     try:
                         event = json.loads(raw)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         continue  # never echo unparsed output
                     self._event(event)
-                code = await self.proc.wait()
+                code = self.proc.wait()
                 if self.stopping:
                     self._status(f"Stopped. Kept {len(self.hits)} verified result(s).")
                 elif code == 0:
-                    self._status(f"Finished. {len(self.hits)} verified result(s). Download before disconnecting.")
+                    self._status(f"Finished. {len(self.hits)} verified result(s).")
                 elif code == 1:
                     self._status(f"Attempt limit reached. Kept {len(self.hits)} result(s).")
                 else:
-                    self._status("Engine failed. Check installation, pattern and GPU support. Private worker output was not displayed.")
+                    self._status("Engine failed. Check installation, pattern and GPU support.")
         except Exception:
-            self._status("Could not run engine. Check installed packages and runtime. No private worker output was displayed.")
+            self._status("Could not run engine. Check installed packages and runtime.")
         finally:
-            if self.proc and self.proc.returncode is None:
-                self.proc.terminate()
-                await self.proc.wait()
-            self.proc = None
-            self.start.disabled = False
-            self.stop.disabled = True
+            try:
+                if self.proc and self.proc.poll() is None:
+                    self.proc.terminate()
+                    self.proc.wait(timeout=5)
+            finally:
+                self.proc = None
+                self.start.disabled = False
+                self.stop.disabled = True
 
     def _event(self, event):
         kind = event.get("type")
@@ -229,8 +232,11 @@ class SolvanityUI:
 
     def _stop(self, *_):
         self.stopping = True
-        if self.proc and self.proc.returncode is None:
-            self.proc.terminate()
+        if self.proc and self.proc.poll() is None:
+            try:
+                self.proc.terminate()
+            except ProcessLookupError:
+                pass
         self._status("Stopping worker. Existing results stay available.")
 
     def _clear(self, *_):
@@ -243,7 +249,7 @@ class SolvanityUI:
         self.hits.clear()
         self.results.children = ()
         self.transfer_output.clear_output()
-        if not (self.task and not self.task.done()):
+        if not (self.task and self.task.is_alive()):
             self.chance.value = 0
             self.metrics.value = ""
             self._status("Cleared.")
