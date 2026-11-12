@@ -3,24 +3,32 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "solvanity-wallet"
-version = "0.1.0"
-description = "CSPRNG-fed CUDA Ed25519 vanity wallet grinder"
+name = "solvanity"
+version = "0.2.0"
+description = "CPU-verified CUDA vanity search for Solana wallets and seeded accounts"
+readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-dependencies = ["PyNaCl>=1.5", "solders>=0.21", "numpy>=1.24"]
+dependencies = ["PyNaCl>=1.5", "solders>=0.26,<0.30", "numpy>=1.24"]
 
 [project.optional-dependencies]
-cuda12 = ["cupy-cuda12x>=13"]
-cuda13 = ["cupy-cuda13x>=14"]
-test = ["pytest>=8"]
+cuda12 = ["cupy-cuda12x>=13,<15"]
+cuda13 = ["cupy-cuda13x>=14,<15"]
+notebook = ["ipywidgets>=8.1,<9"]
+test = ["pytest>=8", "setuptools>=68", "wheel", "pip"]
 
 [project.scripts]
+solvanity = "solvanity.__main__:main"
 solvanity-wallet = "solvanity_wallet.__main__:main"
+solvanity-contract = "solvanity_contract.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["solvanity", "solvanity.*", "solvanity_wallet*", "solvanity_contract*"]
 
 [tool.setuptools.package-data]
 solvanity_wallet = ["cuda/*.cu", "cuda/vendor/*"]
+solvanity_contract = ["kernel.cu"]
 
-# The notebook directory is not an importable distribution package.
-[tool.setuptools.packages.find]
-include = ["solvanity_wallet*"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"

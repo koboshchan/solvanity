@@ -66,7 +66,7 @@ def native(tmp_path_factory):
     if not shutil.which("g++"): pytest.skip("g++ needed for host differential tests")
     # /dev/shm can be noexec, so use pytest's regular tmp directory.
     out=tmp_path_factory.mktemp("kernel")/"kernel.so"
-    source=Path(__file__).parents[1]/"solvanity_contract/kernel.cu"
+    source=Path(__file__).parents[2]/"solvanity_contract/kernel.cu"
     subprocess.run(["g++","-x","c++","-std=c++11","-O2","-shared","-fPIC","-DSOLVANITY_CPU_TEST",str(source),"-o",str(out)],check=True)
     lib=ctypes.CDLL(str(out))
     lib.cpu_hash.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_int,ctypes.c_uint64,ctypes.c_void_p]

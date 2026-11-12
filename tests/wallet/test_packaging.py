@@ -11,11 +11,14 @@ import pytest
 def test_wheel_build_excludes_notebooks_and_keeps_cuda(tmp_path):
     pytest.importorskip("setuptools")
     pytest.importorskip("wheel")
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     source = tmp_path / "source"
     source.mkdir()
     shutil.copy2(root / "pyproject.toml", source)
     shutil.copy2(root / "LICENSE", source)
+    shutil.copy2(root / "README.md", source)
+    shutil.copytree(root / "solvanity_contract", source / "solvanity_contract")
+    shutil.copytree(root / "solvanity", source / "solvanity")
     shutil.copytree(root / "solvanity_wallet", source / "solvanity_wallet")
     shutil.copytree(root / "notebooks", source / "notebooks")
     dest = tmp_path / "wheels"
@@ -25,9 +28,11 @@ def test_wheel_build_excludes_notebooks_and_keeps_cuda(tmp_path):
         capture_output=True, text=True,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    with zipfile.ZipFile(next(dest.glob("solvanity_wallet-*.whl"))) as wheel:
+    with zipfile.ZipFile(next(dest.glob("solvanity-*.whl"))) as wheel:
         names = wheel.namelist()
     assert "solvanity_wallet/core.py" in names
+    assert "solvanity_contract/kernel.cu" in names
+    assert "solvanity/__main__.py" in names
     assert any(name.startswith("solvanity_wallet/cuda/") and name.endswith(".cu") for name in names)
     assert any(name.startswith("solvanity_wallet/cuda/vendor/") for name in names)
     assert not any(name.startswith("notebooks/") for name in names)
@@ -35,7 +40,7 @@ def test_wheel_build_excludes_notebooks_and_keeps_cuda(tmp_path):
 
 def test_notebook_setup_reports_subprocess_errors():
     import json
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     notebook = json.loads((root / "notebooks/Solvanity.ipynb").read_text())
     cells = ["".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code"]
     setup = cells[0]

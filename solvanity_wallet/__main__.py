@@ -3,7 +3,7 @@ import json
 import sys
 from .core import grind
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="OS-CSPRNG-fed Ed25519 vanity keypair search")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("grind")
@@ -16,7 +16,7 @@ def main():
     p.add_argument("--max-attempts", type=int)
     p.add_argument("--output-dir")
     p.add_argument("--json", action="store_true", help="JSON Lines events (includes private keys for hits)")
-    args = vars(parser.parse_args())
+    args = vars(parser.parse_args(argv))
     args.pop("command")
     json_mode = args.pop("json")
     def event(e):
