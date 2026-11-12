@@ -32,10 +32,11 @@ CSS = """<style>
 .sv button{border-radius:10px!important;font-family:inherit!important;font-weight:600}
 .sv-title{font:700 32px/1.1 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.5px;margin:0 0 4px}
 .sv-note{color:var(--mut);font:13px/1.5 inherit;margin:6px 0}
-.sv-metrics{display:flex;gap:24px;flex-wrap:wrap;padding:16px 0}
-.sv-number{font:600 24px inherit;color:var(--fg)}.sv-caption{font:12px inherit;color:var(--mut)}
+.sv-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 24px;background:var(--card);border-radius:14px;padding:16px 18px;margin:10px 0}
+.sv-number{font:600 17px/1.25 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums;color:var(--fg);overflow-wrap:anywhere}.sv-caption{font:12px/1.4 inherit;color:var(--mut);margin-top:2px}
 .sv-result{background:var(--card);border-radius:14px;padding:14px 16px;overflow-wrap:anywhere;margin-top:12px}
 .sv-address{font:15px ui-monospace,SFMono-Regular,Menlo,monospace}
+.sv-eta{background:var(--card);border-radius:14px;padding:14px 16px;margin:10px 0}.sv-eta-big{font:700 28px/1.2 inherit;letter-spacing:-.3px}.sv-eta-sub{font:13px/1.5 inherit;color:var(--mut);margin-top:2px}.sv-eta.warn{border:1px solid #ff9f0a}.sv-eta.warn .sv-eta-big{color:#ff9f0a}.sv-eta.bad .sv-eta-big{color:#ff453a}
 .sv-status{font-size:14px;padding:10px 0;color:var(--mut)}
 </style>"""
 
@@ -49,6 +50,67 @@ def coarse_probability(prefix, suffix, ignore_case):
             return 0.0
         probability *= variants / 58
     return probability
+
+def pattern_error(prefix, suffix, ignore_case):
+    """Reuse the engine's own validation (base58 case-fold, overlap)."""
+    try:
+        from solvanity_wallet.core import validate_pattern
+        validate_pattern(prefix, suffix, ignore_case)
+    except ImportError:
+        for c in prefix + suffix:
+            if not any((o in ALPHABET) for o in ((c.lower(), c.upper()) if ignore_case else (c,))):
+                return f"{c!r} cannot occur in base58 under this case mode"
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+def eta_html(prefix, suffix, ignore_case, rate=None, running=False):
+    """Expected time = 1 / (measured keys per second * match probability)."""
+    if not (prefix or suffix):
+        return ""
+    error = pattern_error(prefix, suffix, ignore_case)
+    if error:
+        return '<div class="sv-eta bad" role="alert"><div class="sv-eta-big">Not possible</div><div class="sv-eta-sub">'+html.escape(error)+'</div></div>'
+    probability = coarse_probability(prefix, suffix, ignore_case)
+    odds = f"1 in {1/probability:,.0f}" if probability else "no match possible"
+    if not rate or rate <= 0:
+        big = "Warming up" if running else "Start to measure speed"
+        return '<div class="sv-eta"><div class="sv-eta-big">'+big+'</div><div class="sv-eta-sub">Approx. odds '+odds+'. Estimate appears once speed is measured.</div></div>'
+    seconds = 1/(rate*probability)
+    cls = " warn" if seconds > 86400 else ""
+    sub = f"Estimated average at {rate:,.0f} keys/s, approx. odds {odds}. Not a guarantee."
+    if seconds > 86400:
+        sub = "Over a day on average. Try a shorter pattern or Any caps. "+sub
+    return '<div class="sv-eta'+cls+'"><div class="sv-eta-big">Expected ~'+human_time(seconds)+'</div><div class="sv-eta-sub">'+html.escape(sub)+'</div></div>'
+
+def percentile_seconds(rate, probability, q):
+    """Time by which a hit has probability q: -log1p(-q)/(rate*p). Stable for tiny p."""
+    lam = rate*probability
+    return -math.log1p(-q)/lam if lam > 0 else math.inf
+
+GPU_FIELDS = "name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit"
+
+def read_gpu():
+    """One bounded nvidia-smi query. None when unavailable."""
+    try:
+        proc = subprocess.run(["nvidia-smi", "--query-gpu="+GPU_FIELDS, "--format=csv,noheader,nounits"],
+                              capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    parts = [x.strip() for x in proc.stdout.strip().splitlines()[0].split(",")]
+    return parts if len(parts) == 7 else None
+
+def gpu_cells(parts):
+    na = lambda v: v if v and "N/A" not in v else None
+    name, util, used, total, temp, power, limit = parts
+    cells = [(na(name) or "GPU", "GPU")]
+    cells.append((f"{util} %" if na(util) else "n/a", "GPU utilization"))
+    cells.append((f"{float(used)/1024:.1f} / {float(total)/1024:.1f} GiB" if na(used) and na(total) else "n/a", "GPU memory"))
+    cells.append((f"{temp} °C" if na(temp) else "n/a", "GPU temperature"))
+    cells.append((f"{float(power):.0f} / {float(limit):.0f} W" if na(power) and na(limit) else "n/a", "GPU power"))
+    return cells
 
 def human_time(seconds):
     if not math.isfinite(seconds):
@@ -123,8 +185,11 @@ class SolvanityUI:
         self.status = W.HTML('<div class="sv-status" role="status">Ready. Choose a pattern, then start.</div>')
         self.metrics = W.HTML()
         self.chance = W.FloatProgress(min=0,max=1,value=0,description="P(≥1 hit)", style={"description_width":"100px","bar_color":"#0071e3"}, layout=wide())
-        self.chance_note = W.HTML('<p class="sv-note">Probability is not completion. Independent trials have no deadline or guaranteed finish. Estimates below assume uniform base58 digits; prefix bias and overlapping patterns can change them significantly.</p>')
+        self.eta = W.HTML()
         self.results = W.VBox()
+        self.snap = {}
+        self.gpu = None
+        self.gpu_stop = threading.Event()
         self.transfer_output = W.Output()
         controls = W.Box([W.VBox([self.prefix,self.suffix,self.case],layout=W.Layout(flex="1 1 300px",min_width="260px")),
                           W.VBox([self.backend,self.batch,self.count,self.budget],layout=W.Layout(flex="1 1 300px",min_width="260px"))],
@@ -134,11 +199,13 @@ class SolvanityUI:
             W.HTML('<p class="sv-note">'+html.escape(gpu_info())+'</p>'),
             self.mode, controls, self.contract_box,
             W.HBox([self.start,self.stop,self.clear]),self.status,self.metrics,
-            self.chance,self.chance_note,self.results,self.transfer_output
+            self.eta,self.chance,self.results,self.transfer_output
         ],layout=W.Layout(width="100%"))
         self.root.add_class("sv")
         self.mode.observe(self._visibility,names="value")
         self.owner.observe(self._visibility,names="value")
+        for w in (self.prefix,self.suffix,self.case):
+            w.observe(self._preview,names="value")
         self.start.on_click(self._start)
         self.stop.on_click(self._stop)
         self.clear.on_click(self._clear)
@@ -151,7 +218,9 @@ class SolvanityUI:
 
     def _flush(self):
         """Push current widget state to the browser (Colab drops background-thread updates)."""
-        for w in (self.status, self.metrics, self.chance, self.start, self.stop, self.results):
+        for w in (self.status, self.metrics, self.chance, self.start, self.stop, self.results,
+                  self.eta, self.contract_box, self.contract_box.layout, self.custom_owner, self.custom_owner.layout,
+                  self.mode, self.owner, self.case, self.batch, self.backend):
             try:
                 w.send_state()
             except Exception:
@@ -198,10 +267,41 @@ class SolvanityUI:
 
     def close(self):
         self._closed = True
+        self.gpu_stop.set()
         self._stop()
         name = json.dumps(self._pump_id)
         display(Javascript("window[Symbol.for('solvanity.refreshTimers')]?.get(" + name + ")?.();"))
         self.root.close()
+
+
+    def _render(self):
+        snap = self.snap
+        if not snap:
+            self.metrics.value = ""
+            return
+        batch = snap.get("batch_size") or (self.config or {}).get("batch_size")
+        cells = [(f"{snap['current']:,.0f}", "keys / second now"), (f"{snap['rate']:,.0f}", "keys / second average"),
+                 (f"{snap['attempts']:,}", "attempts"), (human_time(snap["elapsed"]), "elapsed"),
+                 (human_time(snap["p50"]), "50% chance by (est.)"), (human_time(snap["p90"]), "90% chance by (est.)"),
+                 (f"{batch:,}" if isinstance(batch, int) else "Automatic", "batch size"), (str(len(self.hits)), "results found")]
+        if (self.config or {}).get("backend") == "cuda":
+            cells += gpu_cells(self.gpu) if self.gpu else [("Not available", "GPU telemetry")]
+        else:
+            cells.append(("Not available on CPU", "GPU telemetry"))
+        self.metrics.value = '<div class="sv-metrics">'+"".join('<div><div class="sv-number">'+html.escape(a)+'</div><div class="sv-caption">'+html.escape(b)+'</div></div>' for a,b in cells)+'</div>'
+
+    def _poll_gpu(self, stop):
+        while not stop.wait(1.0):
+            reading = read_gpu()
+            if stop.is_set():
+                return
+            self.gpu = reading
+            self._render()
+
+    def _preview(self, *_):
+        if self.task and self.task.is_alive():
+            return
+        self.eta.value = eta_html(self.prefix.value, self.suffix.value, self.case.value)
 
     def _visibility(self, *_):
         self.contract_box.layout.display = "" if self.mode.value == "contract" else "none"
@@ -230,7 +330,14 @@ class SolvanityUI:
         self.stopping = False
         self.start.disabled = True
         self.stop.disabled = False
+        self.eta.value = eta_html(config["prefix"],config["suffix"],config["ignore_case"],None,True)
         self._status("Starting verified engine. CUDA compilation can take a moment.")
+        self.snap = {}
+        self.gpu = None
+        self.batch_seen = None
+        self.gpu_stop = threading.Event()
+        if config["backend"] == "cuda":
+            threading.Thread(target=self._poll_gpu, args=(self.gpu_stop,), daemon=True).start()
         self.task = threading.Thread(target=self._run, args=(command,), daemon=True)
         self.task.start()
 
@@ -272,6 +379,7 @@ class SolvanityUI:
         except Exception:
             self._status("Could not run engine. Check installed packages and runtime.")
         finally:
+            self.gpu_stop.set()
             try:
                 if self.proc and self.proc.poll() is None:
                     self.proc.terminate()
@@ -286,16 +394,23 @@ class SolvanityUI:
         if kind == "hit":
             self.hits.append(event)
             self._add_card(event)
+        elif kind in ("start","tuning"):
+            if isinstance(event.get("batch_size"), int):
+                self.batch_seen = event["batch_size"]
         elif kind in ("progress","done","summary"):
             attempts = event.get("attempts",0)
             elapsed = event.get("elapsed_seconds",0)
             rate = event.get("keys_per_second", attempts/max(elapsed,1e-9))
             probability = coarse_probability(self.config["prefix"],self.config["suffix"],self.config["ignore_case"])
             chance = -math.expm1(-attempts*probability) if probability else 0
-            median = math.log(2)/(rate*probability) if rate*probability else math.inf
+            now_t = elapsed
+            prev = self.snap
+            current = ((attempts-prev["attempts"])/(now_t-prev["elapsed"])) if prev and now_t > prev["elapsed"] else rate
+            self.snap = dict(attempts=attempts, elapsed=elapsed, rate=rate, current=current, batch_size=event.get("batch_size") or getattr(self, "batch_seen", None),
+                             p50=percentile_seconds(rate, probability, .5), p90=percentile_seconds(rate, probability, .9))
             self.chance.value = min(chance,1)
-            values = [(f"{rate:,.0f}","keys / second"),(f"{attempts:,}","attempts"),(human_time(elapsed),"elapsed"),(human_time(median),"rough median / next hit")]
-            self.metrics.value = '<div class="sv-metrics">'+"".join('<div><div class="sv-number">'+html.escape(a)+'</div><div class="sv-caption">'+b+'</div></div>' for a,b in values)+'</div>'
+            self.eta.value = eta_html(self.config["prefix"],self.config["suffix"],self.config["ignore_case"],rate,True)
+            self._render()
             self._status(f"Searching. {len(self.hits)} verified result(s). Approximate chance so far {chance:.1%}.")
         elif kind == "error":
             self._status("Engine rejected the request. Check pattern, public key and selected backend.")

@@ -95,3 +95,87 @@ def test_optional_diagnostic_failure_does_not_break_worker(monkeypatch):
     m=load(); app=m.SolvanityUI()
     monkeypatch.setenv("SOLVANITY_UI_DIAG","/nonexistent/private-dir/worker.log")
     app._diag("popen pid=123")
+
+def test_flush_covers_visibility_layouts():
+    app=load().SolvanityUI()
+    sent=[]
+    for w in (app.contract_box.layout, app.custom_owner.layout, app.contract_box, app.status, app.stop):
+        w.send_state=(lambda key: (lambda *a,**k: sent.append(key)))(id(w))
+    app.mode.value="contract"
+    assert app.contract_box.layout.display==""
+    app._flush()
+    assert id(app.contract_box.layout) in sent and id(app.custom_owner.layout) in sent
+    app.mode.value="wallet"
+    assert app.contract_box.layout.display=="none"
+
+
+def test_eta_states():
+    m=load()
+    assert "Probability is not completion" not in Path(m.__file__).read_text()
+    assert m.eta_html("","",True)==""
+    assert "Not possible" in m.eta_html("0","",False)
+    assert "Warming up" in m.eta_html("ab","",False,None,True)
+    assert "Start to measure" in m.eta_html("ab","",False)
+    fast=m.eta_html("ab","",False,1e6,True)
+    assert "Expected" in fast and "warn" not in fast and "Not a guarantee" in fast
+    slow=m.eta_html("kobosh","ab",False,1e6,True)
+    assert "warn" in slow and "Over a day" in slow
+    assert "incompatible overlap" in m.eta_html("a"*30,"b"*30,False) or "Not possible" in m.eta_html("a"*30,"b"*30,False)
+
+
+def test_preview_updates_eta():
+    app=load().SolvanityUI()
+    app.prefix.value="ab"
+    assert "Start to measure" in app.eta.value
+
+
+def test_percentiles_and_edges():
+    import math
+    m=load()
+    p=m.coarse_probability("ab","",False)
+    assert p==pytest.approx(1/58**2)
+    r=1e6
+    assert m.percentile_seconds(r,p,.5)==pytest.approx(math.log(2)/(r*p))
+    assert m.percentile_seconds(r,p,.9)==pytest.approx(math.log(10)/(r*p))
+    tiny=m.percentile_seconds(r,1e-30,.5)
+    assert tiny==pytest.approx(math.log(2)/(r*1e-30)) and math.isfinite(tiny)
+    assert m.percentile_seconds(0,p,.5)==math.inf
+    assert m.coarse_probability("0","",False)==0.0
+    assert m.coarse_probability("a","",True)==pytest.approx(2/58)
+    assert "Not possible" in m.eta_html("l","",False)
+    assert "Not possible" in m.eta_html("a"*40,"b"*40,False)
+    assert "Not possible" in m.eta_html("a"*45,"",False)
+
+
+def test_gpu_cells_and_render(monkeypatch):
+    m=load()
+    cells=m.gpu_cells(["A100","73","10240","40960","61","250.5","400.00"])
+    assert ("73 %","GPU utilization") in cells and ("61 °C","GPU temperature") in cells
+    assert m.gpu_cells(["A100","[N/A]","[N/A]","[N/A]","[N/A]","[N/A]","[N/A]"])[1][0]=="n/a"
+    app=m.SolvanityUI()
+    app.config=dict(backend="cpu",batch_size=None,prefix="ab",suffix="",ignore_case=False)
+    app._event(dict(type="progress",attempts=1000,elapsed_seconds=1.0,keys_per_second=1000))
+    app._event(dict(type="progress",attempts=3000,elapsed_seconds=2.0,keys_per_second=1500))
+    assert "2,000" in app.metrics.value and "1,500" in app.metrics.value
+    assert "Not available on CPU" in app.metrics.value and "Automatic" in app.metrics.value
+    assert "Expected" in app.eta.value
+
+
+def test_expected_eta_uses_mean_not_percentile():
+    m=load()
+    assert "Expected ~33.6s" in m.eta_html("ab","",False,100)
+    assert "warn" in m.eta_html("abcdef","",False,1)
+    app=m.SolvanityUI()
+    assert not hasattr(app,"chance_note")
+    assert "Probability is not completion" not in app.eta.value
+
+def test_gpu_poll_drops_stale_query_after_stop(monkeypatch):
+    import threading
+    m=load(); app=m.SolvanityUI(); stop=threading.Event()
+    monkeypatch.setattr(stop,"wait",lambda timeout:False)
+    def query():
+        stop.set()
+        return ["stale","1","1","1","1","1","1"]
+    monkeypatch.setattr(m,"read_gpu",query)
+    app._poll_gpu(stop)
+    assert app.gpu is None
