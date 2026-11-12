@@ -66,10 +66,12 @@ def command_for(config, python=sys.executable):
         raise ValueError("Select wallet or contract")
     from solvanity_contract.core import Pattern, pubkey, validate_owner
     Pattern(config["prefix"], config["suffix"], config["ignore_case"])
-    cmd = [python, "-u", "-m", f"solvanity_{mode}", "grind", "--json",
+    cmd = [python, "-u", "-m", "solvanity", mode, "grind", "--json",
            "--prefix", config["prefix"], "--suffix", config["suffix"],
-           "--backend", config["backend"], "--batch-size", str(config["batch_size"]),
+           "--backend", config["backend"],
            "--count", str(config["count"])]
+    if config.get("batch_size") is not None:
+        cmd += ["--batch-size", str(config["batch_size"])]
     if config["ignore_case"]:
         cmd.append("--ignore-case")
     if config.get("max_attempts"):
@@ -96,28 +98,28 @@ class SolvanityUI:
         self.cards = []
         self.stopping = False
         self.config = None
-        wide = W.Layout(width="100%")
+        wide = lambda: W.Layout(width="100%")
         style = {"description_width": "100px"}
         self.mode = W.ToggleButtons(options=[("Wallet keypair", "wallet"), ("Seeded account", "contract")])
-        self.prefix = W.Text(description="Prefix", placeholder="kobosh", style=style, layout=wide)
-        self.suffix = W.Text(description="Suffix", placeholder="Optional", style=style, layout=wide)
+        self.prefix = W.Text(description="Prefix", placeholder="kobosh", style=style, layout=wide())
+        self.suffix = W.Text(description="Suffix", placeholder="Optional", style=style, layout=wide())
         self.case = W.ToggleButtons(options=[("Exact caps", False), ("Any caps", True)], value=True)
-        self.base = W.Text(description="Base public key", placeholder="Public signer address only, never a private key", style=style, layout=wide)
-        self.owner = W.Dropdown(description="Owner program", options=[("SPL Token", "token"), ("Token 2022", "token2022"), ("Custom program", "custom")], style=style, layout=wide)
-        self.custom_owner = W.Text(description="Program key", style=style, layout=wide)
+        self.base = W.Text(description="Base public key", placeholder="Public signer address only, never a private key", style=style, layout=wide())
+        self.owner = W.Dropdown(description="Owner program", options=[("SPL Token", "token"), ("Token 2022", "token2022"), ("Custom program", "custom")], style=style, layout=wide())
+        self.custom_owner = W.Text(description="Program key", style=style, layout=wide())
         self.contract_box = W.VBox([self.base, self.owner, self.custom_owner,
             W.HTML('<p class="sv-note">A create_with_seed account is not an importable wallet or a PDA. The base signer is still needed to create it. No transaction is sent.</p>')])
-        self.backend = W.Dropdown(description="Compute", options=[("NVIDIA CUDA", "cuda"), ("CPU reference", "cpu")], style=style, layout=wide)
-        self.batch = W.Dropdown(description="Batch size", options=[4096,16384,65536,262144], value=65536, style=style, layout=wide)
-        self.count = W.BoundedIntText(description="Results", min=1, max=100, value=1, style=style, layout=wide)
-        self.budget = W.BoundedIntText(description="Attempt limit", min=0, max=2**53-1, value=0, style=style, layout=wide)
-        self.consent = W.Checkbox(description="I understand cloud-generated keys are for testing, not real funds.", indent=False, layout=wide)
+        self.backend = W.Dropdown(description="Compute", options=[("NVIDIA CUDA", "cuda"), ("CPU reference", "cpu")], style=style, layout=wide())
+        self.batch = W.Dropdown(description="Batch size", options=[("Automatic",None),("4,096",4096),("16,384",16384),("65,536",65536),("262,144",262144)], value=None, style=style, layout=wide())
+        self.count = W.BoundedIntText(description="Results", min=1, max=100, value=1, style=style, layout=wide())
+        self.budget = W.BoundedIntText(description="Attempt limit", min=0, max=2**53-1, value=0, style=style, layout=wide())
+        self.consent = W.Checkbox(description="I understand cloud-generated keys are for testing, not real funds.", indent=False, layout=wide())
         self.start = W.Button(description="Start search", icon="play", style={"button_color":"#0071e3","text_color":"#ffffff"}, layout=W.Layout(width="180px",height="42px"))
         self.stop = W.Button(description="Stop", icon="stop", disabled=True, layout=W.Layout(width="100px",height="42px"))
         self.clear = W.Button(description="Forget results", icon="trash", layout=W.Layout(width="160px",height="42px"))
         self.status = W.HTML('<div class="sv-status" role="status">Ready. Choose a pattern, then start.</div>')
         self.metrics = W.HTML()
-        self.chance = W.FloatProgress(min=0,max=1,value=0,description="P(≥1 hit)", style={"description_width":"100px","bar_color":"#0071e3"}, layout=wide)
+        self.chance = W.FloatProgress(min=0,max=1,value=0,description="P(≥1 hit)", style={"description_width":"100px","bar_color":"#0071e3"}, layout=wide())
         self.chance_note = W.HTML('<p class="sv-note">Probability is not completion. Independent trials have no deadline or guaranteed finish. Estimates below assume uniform base58 digits; prefix bias and overlapping patterns can change them significantly.</p>')
         self.results = W.VBox()
         self.transfer_output = W.Output()
