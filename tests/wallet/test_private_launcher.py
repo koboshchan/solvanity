@@ -9,6 +9,8 @@ private=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(private)
 
 class Sink(io.StringIO):
+    def fileno(self):
+        return 78
     def close(self):
         self.snapshot=self.getvalue()
         super().close()
