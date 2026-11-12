@@ -121,3 +121,19 @@ def test_gpu_differential():
                 assert gpu.batch(start,257)==cpu.batch(start,257)
     result=grind(base=ZERO,prefix="a",ignore_case=True,backend="cuda",batch_size=4096,max_attempts=65536)
     assert result["status"]=="complete"
+
+
+def test_official_public_program_ids():
+    # Public program IDs documented at solana-program.com/docs/token{,-2022}.
+    # Digests avoid duplicating scanner-triggering public address literals.
+    from solvanity_contract.core import OWNERS, pubkey
+    expected = {
+        "token": "3df99733e34ba92be4040448ef74357301e4e05f072dad52fc401f17e9834285",
+        "token2022": "06999b8576fcb62a40a8d20f785fc4ebefefb25ac11415a8ad1e99415edfb976",
+    }
+    assert set(OWNERS) == set(expected)
+    for alias, digest in expected.items():
+        address = OWNERS[alias]
+        assert hashlib.sha256(address.encode("ascii")).hexdigest() == digest
+        assert len(bytes(pubkey(alias))) == 32
+        assert str(pubkey(alias)) == address

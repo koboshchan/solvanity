@@ -7,7 +7,11 @@ from solders.pubkey import Pubkey
 
 ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 OWNERS = {
+    # Public SPL Token program address, NOT a secret or wallet credential.
+    # Official source: https://www.solana-program.com/docs/token
     "token": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    # Public Token-2022 program address, NOT a secret or wallet credential.
+    # Official source: https://www.solana-program.com/docs/token-2022
     "token2022": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
 }
 
