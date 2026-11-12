@@ -15,7 +15,7 @@ def test_inputs_present_and_editable():
     app.prefix.value="ko"; app.suffix.value="sh"; app.count.value=3; app.budget.value=100
     app.mode.value="contract"; app.base.value="11111111111111111111111111111111"
     assert app.contract_box.layout.display==""
-    assert app.batch.value is None
+    assert app.batch.value == "auto" and app._configuration()["batch_size"] is None
 
 def test_no_disclaimer_box():
     import json
@@ -48,3 +48,7 @@ def test_notebook_uses_only_unified_repository():
     assert "solvanity-wallet" not in code and "solvanity-contract" not in code
     for c in n["cells"]:
         if c["cell_type"]=="code":compile("".join(c["source"]),"notebook","exec")
+
+def test_batch_default_selected_and_no_consent():
+    app=load().SolvanityUI()
+    assert app.batch.index==0 and not hasattr(app,"consent")

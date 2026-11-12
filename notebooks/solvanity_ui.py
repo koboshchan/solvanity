@@ -110,10 +110,9 @@ class SolvanityUI:
         self.contract_box = W.VBox([self.base, self.owner, self.custom_owner,
             W.HTML('<p class="sv-note">A create_with_seed account is not an importable wallet or a PDA. The base signer is still needed to create it. No transaction is sent.</p>')])
         self.backend = W.Dropdown(description="Compute", options=[("NVIDIA CUDA", "cuda"), ("CPU reference", "cpu")], style=style, layout=wide())
-        self.batch = W.Dropdown(description="Batch size", options=[("Automatic",None),("4,096",4096),("16,384",16384),("65,536",65536),("262,144",262144)], value=None, style=style, layout=wide())
+        self.batch = W.Dropdown(description="Batch size", options=[("Automatic","auto"),("4,096",4096),("16,384",16384),("65,536",65536),("262,144",262144)], value="auto", style=style, layout=wide())
         self.count = W.BoundedIntText(description="Results", min=1, max=100, value=1, style=style, layout=wide())
         self.budget = W.BoundedIntText(description="Attempt limit", min=0, max=2**53-1, value=0, style=style, layout=wide())
-        self.consent = W.Checkbox(description="I understand cloud-generated keys are for testing, not real funds.", indent=False, layout=wide())
         self.start = W.Button(description="Start search", icon="play", style={"button_color":"#0071e3","text_color":"#ffffff"}, layout=W.Layout(width="180px",height="42px"))
         self.stop = W.Button(description="Stop", icon="stop", disabled=True, layout=W.Layout(width="100px",height="42px"))
         self.clear = W.Button(description="Forget results", icon="trash", layout=W.Layout(width="160px",height="42px"))
@@ -130,7 +129,7 @@ class SolvanityUI:
             W.HTML(CSS+'<p class="sv-title">Solvanity</p><p class="sv-note">Find a custom Solana address.</p>'),
             W.HTML('<p class="sv-note">'+html.escape(gpu_info())+'</p>'),
             self.mode, controls, self.contract_box,
-            self.consent,W.HBox([self.start,self.stop,self.clear]),self.status,self.metrics,
+            W.HBox([self.start,self.stop,self.clear]),self.status,self.metrics,
             self.chance,self.chance_note,self.results,self.transfer_output
         ],layout=W.Layout(width="100%"))
         self.root.add_class("sv")
@@ -154,15 +153,12 @@ class SolvanityUI:
 
     def _configuration(self):
         return dict(mode=self.mode.value,prefix=self.prefix.value,suffix=self.suffix.value,
-                    ignore_case=self.case.value,backend=self.backend.value,batch_size=self.batch.value,
+                    ignore_case=self.case.value,backend=self.backend.value,batch_size=None if self.batch.value=="auto" else self.batch.value,
                     count=self.count.value,max_attempts=self.budget.value,
                     base=self.base.value.strip(),owner=self.custom_owner.value.strip() if self.owner.value=="custom" else self.owner.value)
 
     def _start(self, *_):
         if self.task and not self.task.done():
-            return
-        if self.mode.value == "wallet" and not self.consent.value:
-            self._status("Acknowledge the cloud key warning first.")
             return
         try:
             config = self._configuration()
