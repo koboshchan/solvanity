@@ -81,3 +81,17 @@ def test_spawn_failure_restores_controls_without_output(capsys):
     assert app.proc is None and app.start.disabled is False and app.stop.disabled is True
     assert "Could not run" in app.status.value
     assert "solvanity-private-worker" not in capsys.readouterr().out
+
+def test_refresh_identity_is_unique_and_only_flushes_safe_widgets(monkeypatch):
+    m=load(); app=m.SolvanityUI(); other=m.SolvanityUI()
+    assert app._pump_id != other._pump_id
+    sent=[]
+    for name in ("status","metrics","chance","start","stop","results"):
+        monkeypatch.setattr(getattr(app,name),"send_state",lambda name=name:sent.append(name))
+    app._flush()
+    assert sent==["status","metrics","chance","start","stop","results"]
+
+def test_optional_diagnostic_failure_does_not_break_worker(monkeypatch):
+    m=load(); app=m.SolvanityUI()
+    monkeypatch.setenv("SOLVANITY_UI_DIAG","/nonexistent/private-dir/worker.log")
+    app._diag("popen pid=123")

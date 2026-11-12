@@ -1,6 +1,8 @@
 """Shared Solvanity notebook interface. Never prints worker output or secret events."""
 from __future__ import annotations
 import threading
+import uuid
+import weakref
 import html
 import json
 import math
@@ -92,6 +94,8 @@ def gpu_info():
 
 class SolvanityUI:
     def __init__(self):
+        self._pump_id = "solvanity_" + uuid.uuid4().hex
+        self._closed = False
         self.proc = None
         self.task = None
         self.hits = []
@@ -142,7 +146,62 @@ class SolvanityUI:
 
     def display(self):
         display(self.root)
+        self._start_pump()
         return self
+
+    def _flush(self):
+        """Push current widget state to the browser (Colab drops background-thread updates)."""
+        for w in (self.status, self.metrics, self.chance, self.start, self.stop, self.results):
+            try:
+                w.send_state()
+            except Exception:
+                pass
+
+    def _start_pump(self):
+        # Known Colab bug (googlecolab/colabtools#3373): widget changes made from a
+        # background thread only reach the browser when a frontend->kernel round trip
+        # happens. A browser-side timer calling a registered callback provides it.
+        try:
+            from google.colab import output
+        except ImportError:
+            return
+        reference = weakref.ref(self)
+        def refresh():
+            app = reference()
+            if app is None or app._closed:
+                return False
+            app._flush()
+            return True
+        output.register_callback(self._pump_id, refresh)
+        name = json.dumps(self._pump_id)
+        display(Javascript("""(() => {
+          const name = """ + name + """;
+          const registry = window[Symbol.for('solvanity.refreshTimers')] ||= new Map();
+          if (registry.has(name)) registry.get(name)();
+          let busy = false;
+          const cleanup = () => {
+            clearInterval(timer); registry.delete(name);
+            window.removeEventListener('pagehide', cleanup);
+          };
+          const timer = setInterval(async () => {
+            if (busy) return;
+            busy = true;
+            try {
+              const result = await google.colab.kernel.invokeFunction(name, [], {});
+              if (result?.data?.['application/json'] === false) cleanup();
+            } catch (e) { cleanup(); }
+            finally { busy = false; }
+          }, 500);
+          registry.set(name, cleanup);
+          window.addEventListener('pagehide', cleanup, {once:true});
+        })();"""))
+
+    def close(self):
+        self._closed = True
+        self._stop()
+        name = json.dumps(self._pump_id)
+        display(Javascript("window[Symbol.for('solvanity.refreshTimers')]?.get(" + name + ")?.();"))
+        self.root.close()
 
     def _visibility(self, *_):
         self.contract_box.layout.display = "" if self.mode.value == "contract" else "none"
@@ -175,6 +234,15 @@ class SolvanityUI:
         self.task = threading.Thread(target=self._run, args=(command,), daemon=True)
         self.task.start()
 
+    def _diag(self, text):
+        path = os.environ.get("SOLVANITY_UI_DIAG")
+        if path:
+            try:
+                with open(path, "a", opener=lambda p, flags: os.open(p, flags, 0o600)) as stream:
+                    stream.write(f"{time.time():.3f} {text}\n")
+            except OSError:
+                pass  # Optional diagnostics must never interrupt a search.
+
     def _run(self, command):
         # Thread + Popen: asyncio tasks on an idle Colab kernel are not scheduled
         # until another cell runs, so the UI never updated by itself.
@@ -182,6 +250,7 @@ class SolvanityUI:
             with tempfile.TemporaryFile(mode="w+b") as stderr:
                 # Never inherit stdout: wallet JSON events contain secret key material.
                 self.proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=stderr)
+                self._diag(f"popen pid={self.proc.pid}")
                 if self.stopping:
                     self.proc.terminate()
                 for raw in self.proc.stdout:
@@ -191,6 +260,7 @@ class SolvanityUI:
                         continue  # never echo unparsed output
                     self._event(event)
                 code = self.proc.wait()
+                self._diag(f"exit code={code}")
                 if self.stopping:
                     self._status(f"Stopped. Kept {len(self.hits)} verified result(s).")
                 elif code == 0:
