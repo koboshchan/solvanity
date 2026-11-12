@@ -40,16 +40,84 @@ CSS = """<style>
 .sv-status{font-size:14px;padding:10px 0;color:var(--mut)}
 </style>"""
 
-def coarse_probability(prefix, suffix, ignore_case):
-    """Uniform-digit heuristic only. Prefix digit bias/overlap are not modeled."""
-    probability = 1.0
-    for char in prefix + suffix:
-        variants = sum((c.lower() == char.lower()) if ignore_case else (c == char)
-                       for c in ALPHABET)
-        if not variants:
-            return 0.0
-        probability *= variants / 58
-    return probability
+def _allowed_sets(prefix, suffix, ignore_case, length):
+    """Allowed ALPHABET characters at each of the length positions, or None if contradictory."""
+    def opts(c):
+        return {x for x in ALPHABET if x.lower() == c.lower()} if ignore_case else ({c} & set(ALPHABET))
+    if len(prefix) > length or len(suffix) > length:
+        return None
+    sets = [set(ALPHABET) for _ in range(length)]
+    for i, c in enumerate(prefix):
+        sets[i] &= opts(c)
+    for j, c in enumerate(suffix):
+        sets[length-len(suffix)+j] &= opts(c)
+    return None if any(not x for x in sets) else sets
+
+def _count_le(bound, sets):
+    """Count digit strings (one allowed digit per position) whose base-58 value is <= bound."""
+    d = len(sets)
+    if bound < 0:
+        return 0
+    if bound >= 58**d:
+        n = 1
+        for x in sets:
+            n *= len(x)
+        return n
+    digits = []
+    for _ in range(d):
+        bound, r = divmod(bound, 58)
+        digits.append(r)
+    digits.reverse()
+    suffix_sizes = [1]*(d+1)
+    for i in range(d-1, -1, -1):
+        suffix_sizes[i] = suffix_sizes[i+1]*len(sets[i])
+    total = 0
+    for i in range(d):
+        allowed = {ALPHABET.index(c) for c in sets[i]}
+        total += sum(1 for v in allowed if v < digits[i])*suffix_sizes[i+1]
+        if digits[i] not in allowed:
+            return total
+    return total + 1
+
+def count_matching(prefix, suffix, ignore_case, lengths=None):
+    """Exact number of 32-byte keys whose base58 address matches (0 if constraints conflict).
+    Sums over leading-zero-byte count z and address length; overlap handled by per-position
+    intersection of allowed sets; first numeric digit must be nonzero."""
+    total = 0
+    for z in range(32):
+        lo, hi = 256**(31-z), 256**(32-z)-1
+        for d in range(1, 46):
+            length = z+d
+            if lengths is not None and length not in lengths:
+                continue
+            nlo, nhi = max(lo, 58**(d-1)), min(hi, 58**d-1)
+            if nlo > nhi:
+                continue
+            sets = _allowed_sets(prefix, suffix, ignore_case, length)
+            if sets is None or any("1" not in x for x in sets[:z]):
+                continue
+            num = sets[z:]
+            if len(prefix) > length or len(suffix) > length:
+                continue
+            total += _count_le(nhi, num) - _count_le(nlo-1, num)
+    # the all-zero key is the 32-character address "1"*32
+    if (lengths is None or 32 in lengths):
+        sets = _allowed_sets(prefix, suffix, ignore_case, 32)
+        if sets is not None and len(prefix) <= 32 and len(suffix) <= 32 and all("1" in x for x in sets):
+            total += 1
+    return total
+
+def match_probability(prefix, suffix, ignore_case):
+    """Exact P(random 32-byte key matches) = count / 2**256 (see count_matching)."""
+    return count_matching(prefix, suffix, ignore_case)/2**256
+
+def _suffix_probability(suffix, ignore_case):
+    return match_probability("", suffix, ignore_case)
+
+def _prefix_probability(prefix, ignore_case):
+    return match_probability(prefix, "", ignore_case)
+
+coarse_probability = match_probability
 
 def pattern_error(prefix, suffix, ignore_case):
     """Reuse the engine's own validation (base58 case-fold, overlap)."""
@@ -77,8 +145,12 @@ def eta_html(prefix, suffix, ignore_case, rate=None, running=False):
         big = "Warming up" if running else "Start to measure speed"
         return '<div class="sv-eta"><div class="sv-eta-big">'+big+'</div><div class="sv-eta-sub">Approx. odds '+odds+'. Estimate appears once speed is measured.</div></div>'
     seconds = 1/(rate*probability)
+    first = prefix[:1]
+    slower = (_suffix_probability(first, ignore_case)/_prefix_probability(first, ignore_case)) if first else 1
     cls = " warn" if seconds > 86400 else ""
     sub = f"Estimated average at {rate:,.0f} keys/s, approx. odds {odds}. Not a guarantee."
+    if slower > 3:
+        sub = f"Rare start: addresses seldom begin with {first!r} (about {slower:.0f}x slower than a random letter). "+sub
     if seconds > 86400:
         sub = "Over a day on average. Try a shorter pattern or Any caps. "+sub
     return '<div class="sv-eta'+cls+'"><div class="sv-eta-big">Expected ~'+human_time(seconds)+' (est.)</div><div class="sv-eta-sub">'+html.escape(sub)+'</div></div>'

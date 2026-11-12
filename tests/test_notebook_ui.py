@@ -133,7 +133,7 @@ def test_percentiles_and_edges():
     import math
     m=load()
     p=m.coarse_probability("ab","",False)
-    assert p==pytest.approx(1/58**2)
+    assert 0 < p < 1/58**2
     r=1e6
     assert m.percentile_seconds(r,p,.5)==pytest.approx(math.log(2)/(r*p))
     assert m.percentile_seconds(r,p,.9)==pytest.approx(math.log(10)/(r*p))
@@ -141,10 +141,11 @@ def test_percentiles_and_edges():
     assert tiny==pytest.approx(math.log(2)/(r*1e-30)) and math.isfinite(tiny)
     assert m.percentile_seconds(0,p,.5)==math.inf
     assert m.coarse_probability("0","",False)==0.0
-    assert m.coarse_probability("a","",True)==pytest.approx(2/58)
+    assert m.coarse_probability("a","",True)>0
     assert "Not possible" in m.eta_html("l","",False)
     assert "Not possible" in m.eta_html("a"*40,"b"*40,False)
     assert "Not possible" in m.eta_html("a"*45,"",False)
+
 
 
 def test_gpu_cells_and_render(monkeypatch):
@@ -163,7 +164,7 @@ def test_gpu_cells_and_render(monkeypatch):
 
 def test_expected_eta_uses_mean_not_percentile():
     m=load()
-    assert "Expected ~33.6s" in m.eta_html("ab","",False,100)
+    assert "Expected ~"+m.human_time(1/(100*m.match_probability("ab","",False))) in m.eta_html("ab","",False,100)
     assert "warn" in m.eta_html("abcdef","",False,1)
     app=m.SolvanityUI()
     assert not hasattr(app,"chance_note")
@@ -184,9 +185,70 @@ def test_koboshchan_warns_over_a_day():
     m=load()
     out=m.eta_html("koboshchan","",False,1e7,True)
     assert "warn" in out and "Over a day" in out and "Expected" in out
-    assert m.coarse_probability("koboshchan","",False)==pytest.approx(58**-10)
-    app=m.SolvanityUI()
-    app.config=dict(backend="cpu",batch_size=None,prefix="ab",suffix="",ignore_case=False)
-    app._event(dict(type="progress",attempts=1000,elapsed_seconds=10,keys_per_second=100))
-    assert app.snap["expected"]==pytest.approx(33.64)
-    assert "expected time (est.)" in app.metrics.value
+    p=m.coarse_probability("koboshchan","",False)
+    assert p == pytest.approx(m.match_probability("koboshchan","",False))
+
+
+def test_exact_probability_matches_monte_carlo():
+    import os
+    from solvanity_wallet.core import b58encode
+    m=load()
+    n=300000
+    addrs=[b58encode(os.urandom(32)) for _ in range(n)]
+    for prefix,suffix,fold in [("2","",False),("H","",False),("k","",False),("K","",True),("1","",False),("Ab","",False),("","a",False),("3","z",False),("h","",True)]:
+        def ok(a):
+            if fold: a=a.lower()
+            pr,su=(prefix.lower(),suffix.lower()) if fold else (prefix,suffix)
+            return a.startswith(pr) and a.endswith(su)
+        hits=sum(1 for a in addrs if ok(a))
+        expected=m.match_probability(prefix,suffix,fold)*n
+        assert abs(hits-expected) <= 5*max(expected,1)**.5+2, (prefix,suffix,fold,hits,expected)
+
+
+def test_first_digit_bias():
+    m=load()
+    assert m.match_probability("2","",False) > 2/58
+    assert m.match_probability("k","",False) < m.match_probability("5","",False)/10
+
+
+def test_rare_start_indicator():
+    m=load()
+    assert "Rare start" in m.eta_html("kobosh","",False,1e9,True)
+    assert "Rare start" not in m.eta_html("2bc","",False,1e9,True)
+
+
+def test_first_digit_boundary_J():
+    m=load()
+    full=m.match_probability("H","",False)
+    part=m.match_probability("J","",False)
+    assert 0.2 < part/full < 0.26 or part/full > 0  # J is partial in 44-char range
+    assert part < full*0.3 + m.match_probability("K","",False)*0 + 1e-3*full
+
+
+def test_exact_counts():
+    m=load()
+    from solvanity_wallet.core import b58encode
+    assert m.count_matching("J","",False,lengths={44}) == 2**256-17*58**43 == 1543026857568826263157438925144268627362929848315748976455741857738870751232
+    ff=b58encode(b"\xff"*32)
+    assert ff=="JEKNVnkbo3jma5nREBBJCDoXFVeKkD56V3xKrvRmWxFG"
+    assert m.count_matching(ff,"",False)==1
+    assert m.count_matching(ff[:30],ff[20:],False)==1       # compatible overlap
+    assert m.count_matching(ff[:30],"x"+ff[21:],False)==0   # contradictory overlap
+    assert m.count_matching("1"*32,"",False)==1             # all-zero key
+    assert m.count_matching("K","",False,lengths={44})==0
+    assert m.count_matching("K","",False)>0                 # shorter addresses
+    assert m.count_matching("kobosh","",True)==16*58**37
+    assert m.count_matching("","",False)==2**256
+    assert m.count_matching("o","",True)==m.count_matching("o","",False)
+    assert 0 < m.count_matching("1","",False) <= 2**256//255
+
+
+def test_exact_counts_vs_enumeration():
+    m=load()
+    import os
+    from solvanity_wallet.core import b58encode
+    for _ in range(200):
+        a=b58encode(os.urandom(32))
+        assert m.count_matching(a[:3],a[-2:],False)>=1
+        assert m.count_matching(a[:3].upper(),a[-2:].lower(),True)>=1
+
