@@ -9,9 +9,9 @@
 
 <!-- PROJECT LOGO -->
 <div align="center">
-<h1>Solvanity Wallet</h1>
-<p>CUDA Ed25519 vanity keypairs with independent CPU verification.</p>
-<p><a href="https://colab.research.google.com/github/koboshchan/solvanity-wallet/blob/main/notebooks/Solvanity.ipynb">Open notebook</a> &middot; <a href="#getting-started">Local quickstart</a> &middot; <a href="#security">Security</a> &middot; <a href="https://github.com/koboshchan/solvanity-wallet/issues">Report an issue</a></p>
+<h1>Solvanity</h1>
+<p>One package for CUDA wallet keypairs and seeded-account vanity addresses.</p>
+<p><a href="https://colab.research.google.com/github/koboshchan/solvanity/blob/main/notebooks/Solvanity.ipynb">Open notebook</a> &middot; <a href="#getting-started">Local quickstart</a> &middot; <a href="#security">Security</a> &middot; <a href="https://github.com/koboshchan/solvanity/issues">Report an issue</a></p>
 </div>
 
 
@@ -35,9 +35,13 @@
 <!-- ABOUT THE PROJECT -->
 ## About The Project
 
-Generate real Solana Ed25519 vanity keypairs on an NVIDIA GPU. This is **not** a create-with-seed address generator. Exported wallets can sign and can be imported into Phantom.
+Solvanity combines two search engines in one installable package, one CLI, and one Colab notebook. Both support exact or case-insensitive prefix/suffix matching and independent CPU verification of GPU hits.
 
-Own MIT search kernel with attributed Ed25519/SHA-512 device primitives. Every candidate gets a fresh independent 32-byte seed from host `os.urandom`. No cuRAND, timestamp seeds, counter expansion, or deterministic candidate stream. SHA-512, Ed25519 fixed-base multiplication, Base58 encoding, prefix/suffix checks run on the GPU. Every returned hit must pass independent PyNaCl and solders CPU checks before private-key export.
+**Wallet mode** generates real Ed25519 keypairs that can sign and be imported into Phantom. Each candidate starts with an independent 32-byte seed from host `os.urandom`. SHA-512, Ed25519 multiplication, Base58 encoding, and matching run on the GPU. Every hit is checked with PyNaCl and solders before export.
+
+**Contract mode** searches Solana `create_with_seed` addresses for a public base signer and owner program. It returns an address and derivation seed, not a private key, deployable contract, or PDA. Creating the account still needs the base signer and an appropriate transaction. It cannot be imported as a wallet.
+
+The histories of the original wallet and contract repositories are retained in this repository. Existing `solvanity_wallet` and `solvanity_contract` imports and CLI entry points remain available.
 
 ### Built With
 
@@ -53,9 +57,9 @@ Python, CuPy/NVRTC, PyNaCl, solders, and attributed CUDA Ed25519/SHA-512 primiti
 
 Open the shared notebook using the badge above. In Colab, select a GPU under **Runtime > Change runtime type** and run the setup cell, then the interface cell. Runtime availability and billing are controlled by your Colab account; the notebook does not allocate or purchase a runtime.
 
-Choose **Wallet keypair** or **Seeded account**, enter a prefix and/or suffix, and select **Exact caps** or **Any caps**. Choose **NVIDIA CUDA** or **CPU reference**, set a batch size and attempt limit, then start the search. Seeded mode also needs your base signer's **public** key and the intended owner program. Never paste an existing private key.
+Choose **Wallet keypair** or **Seeded account**, enter a prefix and/or suffix, and select **Exact caps** or **Any caps**. Choose **NVIDIA CUDA** or **CPU reference**, leave batch size on **Automatic** or choose a fixed override, set an attempt limit, then start the search. Seeded mode also needs your base signer's **public** key and the intended owner program. Never paste an existing private key.
 
-Wallet mode requires acknowledging the cloud-key warning. Results are hidden until an explicit reveal or export. Download JSON64 to retain a wallet, or derivation JSON to retain a seeded-account result. **Stop** takes effect between batches. When finished, use **Forget results**, clear all notebook outputs, and delete the runtime. Forgetting is not guaranteed secure erasure. The probability display is an estimate, not search completion or a promised deadline.
+Results are hidden until an explicit reveal or export. Download JSON64 to retain a wallet, or derivation JSON to retain a seeded-account result. **Stop** takes effect between batches. When finished, use **Forget results**, clear all notebook outputs, and delete the runtime. Forgetting is not guaranteed secure erasure. The probability display is an estimate, not search completion or a promised deadline.
 
 **Use cloud-generated wallets for testing only.** The runtime provider, browser extensions, saved outputs, and anyone with runtime access may be able to read private keys. Use a trusted local environment for wallets intended to hold real funds.
 
@@ -64,8 +68,8 @@ Wallet mode requires acknowledging the cloud-key warning. Results are hidden unt
 Python 3.10+ is required. For GPU search, use a compatible NVIDIA GPU and CUDA driver. With CUDA 12:
 
 ```sh
-git clone https://github.com/koboshchan/solvanity-wallet
-cd solvanity-wallet
+git clone https://github.com/koboshchan/solvanity
+cd solvanity
 pip install -e '.[cuda12,test]'
 ```
 
@@ -76,7 +80,7 @@ For a CPU-only quickstart, install the test extras and run the reference checks 
 ```sh
 python -m pip install -e '.[test]'
 python -m pytest -q
-python -m solvanity_wallet grind --prefix A --backend cpu \
+python -m solvanity wallet grind --prefix A --backend cpu \
   --batch-size 128 --max-attempts 4096 --count 1 --output-dir ./private-wallets
 ```
 
@@ -91,7 +95,7 @@ This command prints a private key if it finds a match. Run it only in a private 
 ### CLI
 
 ```sh
-python -m solvanity_wallet grind --prefix ko --suffix sh --ignore-case \
+python -m solvanity wallet grind --prefix ko --suffix sh --ignore-case \
   --backend cuda --batch-size 65536 --count 1 --output-dir ./private-wallets --json
 ```
 
@@ -99,12 +103,24 @@ Use `--backend cpu` for reference/testing. Use `--max-attempts 100000` to bound 
 
 JSON Lines events have `type` set to `progress`, `hit`, or `done`. Progress includes attempts, elapsed_seconds, keys_per_second, and found. A hit includes address, keypair_json (64-byte seed || public key), phantom_secret (Base58 of those 64 bytes), and optional path. **Hit events contain PRIVATE KEYS. Do not share or publish terminal/notebook output.** Keypair files use exclusive creation and mode 0600. Existing files are never overwritten. Exit codes are 0 for success, 1 for attempt limit, 2 for validation/runtime errors, 130 for interruption.
 
+### Seeded-account CLI
+
+```sh
+python -m solvanity contract grind --base YOUR_PUBLIC_BASE_ADDRESS --owner token \
+  --prefix ko --ignore-case --backend cpu --max-attempts 100000 --json
+
+python -m solvanity contract verify --base YOUR_PUBLIC_BASE_ADDRESS \
+  --owner token --seed YOUR_RESULT_SEED --address YOUR_RESULT_ADDRESS
+```
+
+The owner can be `token`, `token2022`, or a program public key. Supply only the base signer's public address. Omitting `--batch-size` enables automatic CUDA batch calibration; an explicit integer overrides it. The same automatic option is available in wallet mode. Startup calibration is separate from steady-state search throughput.
+
 ### Python API
 
 ```python
-from solvanity_wallet import grind
+from solvanity import grind_wallet
 
-hits = grind(prefix="ko", suffix="sh", ignore_case=True,
+hits = grind_wallet(prefix="ko", suffix="sh", ignore_case=True,
              backend="cuda", batch_size=65536, count=1,
              max_attempts=1000000, output_dir="./private-wallets",
              on_event=lambda event: print(event["type"]))
@@ -119,27 +135,16 @@ The callback receives the same event dictionaries as the CLI. Avoid printing pri
 
 ```sh
 pytest -q
-SOLVANITY_TEST_CUDA=1 pytest tests/test_cuda.py -v
+SOLVANITY_TEST_CUDA=1 pytest -v
 ```
 
 CPU tests include an RFC 8032 vector, Base58 leading zeros and solders cross-checks, fresh entropy per batch, mismatch rejection, pattern validation, bounded execution, secret formatting, and output permissions. Explicit GPU QA checks all derived public keys against PyNaCl, including RFC/random/edge seeds, plus exact and case-insensitive prefix, suffix, and combined matching, with CPU verification of every hit.
 
-Host CSPRNG generation and transfers are included in the reported end-to-end rate. The A100 measurements and device validation below were performed on the actual target runtime.
-
 ## Benchmarks
 
-Measured on a Colab NVIDIA A100-SXM4-80GB runtime with CuPy 14.2.0 and CUDA runtime 13.2. Each row is the median of five batches after one warmup batch. Startup and JIT compilation are excluded.
+Wallet and seeded-account searches do different cryptographic work, so their rates are not interchangeable. Historical A100 tuning runs informed the current backends, but the original raw reports were lost during recovery. They are not a reproducible benchmark of this unified release. See [the recovery record](docs/recovery/engine-20261112.md).
 
-| Backend | Runtime | Batch size | Median throughput |
-| --- | --- | --- | --- |
-| CPU reference | CPU on the same Colab A100 runtime | 4,096 | 27,256 keypairs/s |
-| CUDA | NVIDIA A100-SXM4-80GB | 65,536 | 7,062,114 keypairs/s |
-
-The workload uses exact prefix `abcdef`, no suffix. The timed scan includes host OS-CSPRNG seed generation, SHA-512/Ed25519, base58/matching, transfers, synchronization, and device-buffer wiping. It is a batch-search measurement, not CLI startup or wallet-export latency. It does not measure the cost of a high-hit workload with per-hit verification/export.
-
-The A100 device correctness suite passed all 21 tests, including all three CUDA tests. Actual notebook start/search/clear callbacks also returned verified GPU hits. Browser rendering, clipboard behavior, and download interaction still need interactive browser QA.
-
-Wallet keypairs and seeded-account addresses perform different work. Compare these figures only with the same workload and timing scope.
+The unified package has passed CPU tests. Its CUDA tests are opt-in and were skipped in the integration run; those CPU results do not establish current GPU throughput or correctness. Benchmark on your target GPU and record hardware, CUDA/CuPy versions, batch settings, warmup, and whether timing includes entropy generation, transfers, verification, and export.
 
 ## Security
 
@@ -184,8 +189,8 @@ README adapted from the fetched [Best-README-Template](https://github.com/othnei
 
 <!-- MARKDOWN LINKS & IMAGES -->
 [colab-shield]: https://colab.research.google.com/assets/colab-badge.svg
-[colab-url]: https://colab.research.google.com/github/koboshchan/solvanity-wallet/blob/main/notebooks/Solvanity.ipynb
+[colab-url]: https://colab.research.google.com/github/koboshchan/solvanity/blob/main/notebooks/Solvanity.ipynb
 [license-shield]: https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge
-[license-url]: https://github.com/koboshchan/solvanity-wallet/blob/main/LICENSE
+[license-url]: https://github.com/koboshchan/solvanity/blob/main/LICENSE
 [cuda-shield]: https://img.shields.io/badge/CUDA-NVIDIA-76B900?style=for-the-badge&logo=nvidia&logoColor=white
 [cuda-url]: https://developer.nvidia.com/cuda-zone
